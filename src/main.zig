@@ -39,6 +39,7 @@ const default_capture_samples_bytes: usize = 8 * 1024 * 1024;
 const CaptureCommand = struct {
     output_path: []const u8,
     sample_bytes: usize = default_capture_samples_bytes,
+    decode_cross: bool = false,
 };
 
 const Command = union(enum) {
@@ -61,6 +62,7 @@ fn parseArgs() !Command {
     var output_path: ?[]const u8 = null;
     var sample_bytes: usize = default_capture_samples_bytes;
     var samples_set = false;
+    var decode_cross = false;
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--scan")) {
@@ -86,6 +88,10 @@ fn parseArgs() !Command {
             samples_set = true;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--decode-cross")) {
+            decode_cross = true;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             try printUsage(stdout);
             return error.ShowHelp;
@@ -93,7 +99,7 @@ fn parseArgs() !Command {
         return error.InvalidArgument;
     }
 
-    const capture_requested = output_path != null or samples_set;
+    const capture_requested = output_path != null or samples_set or decode_cross;
     if (requested_read_only != null and capture_requested) return error.InvalidArgument;
 
     if (requested_read_only) |command| {
@@ -107,6 +113,7 @@ fn parseArgs() !Command {
         return .{ .capture = .{
             .output_path = path,
             .sample_bytes = sample_bytes,
+            .decode_cross = decode_cross,
         } };
     }
 
@@ -118,13 +125,14 @@ fn printUsage(writer: anytype) !void {
         \\Usage:
         \\  pxlobster --scan
         \\  pxlobster --prime-fw
-        \\  pxlobster -o <path> [--samples <bytes>]
+        \\  pxlobster -o <path> [--samples <bytes>] [--decode-cross]
         \\
         \\Options:
         \\  --scan               Read-only scan for supported PX Logic devices.
         \\  --prime-fw           Inject firmware to detected PX Logic devices.
         \\  -o, --output-file    Capture raw samples to output file.
         \\  --samples            Capture bytes target (default: 8388608).
+        \\  --decode-cross       Decode PXView LA_CROSS_DATA into packed channel samples.
         \\  -h, --help           Show this help.
         \\
         \\Notes:
@@ -232,6 +240,7 @@ fn runCapture(cmd: CaptureCommand, stdout: anytype, stderr: anytype) !void {
         const stats = capture.runCaptureToFile(std.heap.page_allocator, ctx.?, .{
             .output_path = cmd.output_path,
             .sample_bytes = cmd.sample_bytes,
+            .decode_cross = cmd.decode_cross,
         }) catch |err| {
             try stderr.print("capture failed: {s}\n", .{@errorName(err)});
             std.process.exit(1);

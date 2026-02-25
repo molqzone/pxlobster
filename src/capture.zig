@@ -11,6 +11,7 @@ const no_failure_status: u32 = std.math.maxInt(u32);
 pub const CaptureOptions = struct {
     output_path: []const u8,
     sample_bytes: usize,
+    decode_cross: bool = false,
     ring_capacity_bytes: usize = ringbuffer.default_capacity_bytes,
     transfer_size: usize = usb.DEFAULT_CAPTURE_TRANSFER_SIZE,
     transfer_count: usize = usb.DEFAULT_CAPTURE_TRANSFER_COUNT,
@@ -81,6 +82,12 @@ pub fn runCaptureToFile(
     defer usb.releaseInterface(handle, 1);
 
     const capture_channel_count = detectCaptureChannelCount(handle, opened.vid, opened.pid);
+    if (options.decode_cross) {
+        const stripe_bytes = @as(usize, @intCast(capture_channel_count)) * @sizeOf(u64);
+        if (stripe_bytes == 0 or options.sample_bytes % stripe_bytes != 0) {
+            return error.InvalidDecodeSampleSize;
+        }
+    }
 
     const output_file = try std.fs.cwd().createFile(options.output_path, .{ .truncate = true });
     defer output_file.close();
@@ -135,6 +142,8 @@ pub fn runCaptureToFile(
         .ring = &ring,
         .file = output_file,
         .target_bytes = options.sample_bytes,
+        .decode_cross = options.decode_cross,
+        .channel_count = capture_channel_count,
         .producer_done = &shared.producer_done,
         .stop_requested = &shared.stop_requested,
     };
