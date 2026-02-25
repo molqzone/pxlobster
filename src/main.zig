@@ -32,6 +32,12 @@ const Command = enum {
     scan,
 };
 
+const LogicModeProbe = union(enum) {
+    value: u32,
+    busy,
+    unavailable,
+};
+
 fn parseArgs() !Command {
     var args = std.process.args();
     _ = args.next();
@@ -102,15 +108,15 @@ fn scanUsbDevices(writer: anytype) !void {
 
 fn detectTag(dev: *c.libusb_device, vid: u16, pid: u16) ?[]const u8 {
     if (comptime builtin.is_test) {
-        return modelLabelForIdentity(vid, pid, c.LIBUSB_SPEED_HIGH, null);
+        return modelLabelForIdentity(vid, pid, c.LIBUSB_SPEED_HIGH, .unavailable);
     } else {
         const usb_speed = c.libusb_get_device_speed(dev);
-        const logic_mode: ?u32 = if (vid == 0x16C0 and pid == 0x05DC) readLogicMode(dev) else null;
+        const logic_mode: LogicModeProbe = if (vid == 0x16C0 and pid == 0x05DC) readLogicMode(dev) else .unavailable;
         return modelLabelForIdentity(vid, pid, usb_speed, logic_mode);
     }
 }
 
-fn modelLabelForIdentity(vid: u16, pid: u16, usb_speed: c_int, logic_mode: ?u32) ?[]const u8 {
+fn modelLabelForIdentity(vid: u16, pid: u16, usb_speed: c_int, logic_mode: LogicModeProbe) ?[]const u8 {
     if (vid == 0x1A86 and pid == 0x5237) {
         return switch (usb_speed) {
             c.LIBUSB_SPEED_SUPER => "PX-Logic U3 channel 32",
@@ -120,8 +126,9 @@ fn modelLabelForIdentity(vid: u16, pid: u16, usb_speed: c_int, logic_mode: ?u32)
     }
 
     if (vid == 0x16C0 and pid == 0x05DC) {
-        if (logic_mode) |mode| {
-            return switch (mode) {
+        return switch (logic_mode) {
+            .busy => "PX-Logic (Busy)",
+            .value => |mode| switch (mode) {
                 0 => switch (usb_speed) {
                     c.LIBUSB_SPEED_SUPER => "PX-Logic U3 channel 32",
                     c.LIBUSB_SPEED_HIGH => "PX-Logic U2 channel 32",
@@ -147,35 +154,34 @@ fn modelLabelForIdentity(vid: u16, pid: u16, usb_speed: c_int, logic_mode: ?u32)
                     c.LIBUSB_SPEED_HIGH => "PX-Logic U2 (unknown mode)",
                     else => "PX-Logic (unknown mode)",
                 },
-            };
-        }
-
-        return switch (usb_speed) {
-            c.LIBUSB_SPEED_SUPER => "PX-Logic U3 (mode unknown)",
-            c.LIBUSB_SPEED_HIGH => "PX-Logic U2 (mode unknown)",
-            else => "PX-Logic (mode unknown)",
+            },
+            .unavailable => switch (usb_speed) {
+                c.LIBUSB_SPEED_SUPER => "PX-Logic U3 (mode unknown)",
+                c.LIBUSB_SPEED_HIGH => "PX-Logic U2 (mode unknown)",
+                else => "PX-Logic (mode unknown)",
+            },
         };
     }
     return null;
 }
 
-fn readLogicMode(dev: *c.libusb_device) ?u32 {
+fn readLogicMode(dev: *c.libusb_device) LogicModeProbe {
     if (comptime builtin.is_test) {
-        return null;
+        return .unavailable;
     } else {
         var desc: c.libusb_device_descriptor = undefined;
-        if (c.libusb_get_device_descriptor(dev, &desc) != 0) return null;
+        if (c.libusb_get_device_descriptor(dev, &desc) != 0) return .unavailable;
 
         var handle_opt: ?*c.libusb_device_handle = null;
-        if (c.libusb_open(dev, &handle_opt) != 0 or handle_opt == null) return null;
+        if (c.libusb_open(dev, &handle_opt) != 0 or handle_opt == null) return .unavailable;
         const handle = handle_opt.?;
         defer c.libusb_close(handle);
 
-        if (!isPxManufacturer(handle, desc.iManufacturer)) return null;
+        if (!isPxManufacturer(handle, desc.iManufacturer)) return .unavailable;
 
-        if (c.libusb_claim_interface(handle, 0) != 0) return null;
+        if (c.libusb_claim_interface(handle, 0) != 0) return .busy;
         defer _ = c.libusb_release_interface(handle, 0);
-        if (c.libusb_claim_interface(handle, 1) != 0) return null;
+        if (c.libusb_claim_interface(handle, 1) != 0) return .busy;
         defer _ = c.libusb_release_interface(handle, 1);
 
         var packet = [_]u32{
@@ -187,10 +193,10 @@ fn readLogicMode(dev: *c.libusb_device) ?u32 {
         const bytes = std.mem.asBytes(&packet);
         const packet_ptr: [*c]u8 = @ptrCast(bytes.ptr);
 
-        if (c.libusb_bulk_transfer(handle, 0x01, packet_ptr, @intCast(bytes.len), null, 1000) != 0) return null;
-        if (c.libusb_bulk_transfer(handle, 0x81, packet_ptr, @intCast(bytes.len), null, 1000) != 0) return null;
+        if (c.libusb_bulk_transfer(handle, 0x01, packet_ptr, @intCast(bytes.len), null, 1000) != 0) return .unavailable;
+        if (c.libusb_bulk_transfer(handle, 0x81, packet_ptr, @intCast(bytes.len), null, 1000) != 0) return .unavailable;
 
-        return packet[3];
+        return .{ .value = packet[3] };
     }
 }
 
@@ -208,14 +214,15 @@ fn isPxManufacturer(handle: *c.libusb_device_handle, manufacturer_index: u8) boo
 }
 
 test "modelLabelForIdentity matches PX Logic profiles" {
-    try std.testing.expectEqualStrings("PX-Logic U3 channel 32", modelLabelForIdentity(0x1A86, 0x5237, c.LIBUSB_SPEED_SUPER, null).?);
-    try std.testing.expectEqualStrings("PX-Logic U2 channel 32", modelLabelForIdentity(0x1A86, 0x5237, c.LIBUSB_SPEED_HIGH, null).?);
-    try std.testing.expectEqualStrings("PX-Logic U3 channel 16 Pro", modelLabelForIdentity(0x16C0, 0x05DC, c.LIBUSB_SPEED_SUPER, 1).?);
-    try std.testing.expectEqualStrings("PX-Logic U2 channel 16 Plus", modelLabelForIdentity(0x16C0, 0x05DC, c.LIBUSB_SPEED_HIGH, 2).?);
-    try std.testing.expectEqualStrings("PX-Logic U3 (mode unknown)", modelLabelForIdentity(0x16C0, 0x05DC, c.LIBUSB_SPEED_SUPER, null).?);
+    try std.testing.expectEqualStrings("PX-Logic U3 channel 32", modelLabelForIdentity(0x1A86, 0x5237, c.LIBUSB_SPEED_SUPER, .unavailable).?);
+    try std.testing.expectEqualStrings("PX-Logic U2 channel 32", modelLabelForIdentity(0x1A86, 0x5237, c.LIBUSB_SPEED_HIGH, .unavailable).?);
+    try std.testing.expectEqualStrings("PX-Logic U3 channel 16 Pro", modelLabelForIdentity(0x16C0, 0x05DC, c.LIBUSB_SPEED_SUPER, .{ .value = 1 }).?);
+    try std.testing.expectEqualStrings("PX-Logic U2 channel 16 Plus", modelLabelForIdentity(0x16C0, 0x05DC, c.LIBUSB_SPEED_HIGH, .{ .value = 2 }).?);
+    try std.testing.expectEqualStrings("PX-Logic U3 (mode unknown)", modelLabelForIdentity(0x16C0, 0x05DC, c.LIBUSB_SPEED_SUPER, .unavailable).?);
+    try std.testing.expectEqualStrings("PX-Logic (Busy)", modelLabelForIdentity(0x16C0, 0x05DC, c.LIBUSB_SPEED_HIGH, .busy).?);
 }
 
 test "modelLabelForIdentity returns null for unknown IDs" {
-    try std.testing.expect(modelLabelForIdentity(0x046D, 0xC52B, c.LIBUSB_SPEED_HIGH, null) == null);
-    try std.testing.expect(modelLabelForIdentity(0x0000, 0x0000, c.LIBUSB_SPEED_HIGH, null) == null);
+    try std.testing.expect(modelLabelForIdentity(0x046D, 0xC52B, c.LIBUSB_SPEED_HIGH, .unavailable) == null);
+    try std.testing.expect(modelLabelForIdentity(0x0000, 0x0000, c.LIBUSB_SPEED_HIGH, .unavailable) == null);
 }
