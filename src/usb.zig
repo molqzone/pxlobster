@@ -379,10 +379,6 @@ fn writeBulkChunks(handle: *c.libusb_device_handle, endpoint: u8, data: []const 
     }
 }
 
-test "snapshotFromDevice ignores null descriptor path in tests by construction" {
-    try std.testing.expect(true);
-}
-
 test "captureChannelMask supports 16 and 32 channels" {
     try std.testing.expectEqual(@as(u32, 0x0000_FFFF), try captureChannelMask(16));
     try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), try captureChannelMask(32));
