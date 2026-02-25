@@ -261,9 +261,7 @@ fn transferCallback(raw_transfer: ?*c.libusb_transfer) callconv(.c) void {
     const status = transfer.status;
     if (status == c.LIBUSB_TRANSFER_COMPLETED and transfer.actual_length > 0) {
         const received: usize = @intCast(transfer.actual_length);
-        const payload = transfer.buffer[0..received];
-        _ = shared.ring.push(payload);
-        _ = shared.bytes_in.fetchAdd(@as(u64, @intCast(received)), .acq_rel);
+        pushTransferPayload(shared, transfer.buffer[0..received]);
     } else if (status == c.LIBUSB_TRANSFER_NO_DEVICE or status == c.LIBUSB_TRANSFER_STALL) {
         markTransferFailure(shared, status);
     } else if (status != c.LIBUSB_TRANSFER_CANCELLED and status != c.LIBUSB_TRANSFER_TIMED_OUT and status != c.LIBUSB_TRANSFER_COMPLETED) {
@@ -278,6 +276,13 @@ fn transferCallback(raw_transfer: ?*c.libusb_transfer) callconv(.c) void {
     }
 
     _ = shared.active_submissions.fetchSub(1, .acq_rel);
+}
+
+fn pushTransferPayload(shared: *SharedState, payload: []const u8) void {
+    const pushed = shared.ring.push(payload);
+    if (pushed > 0) {
+        _ = shared.bytes_in.fetchAdd(@as(u64, @intCast(pushed)), .acq_rel);
+    }
 }
 
 fn cancelActiveTransfers(slots: []TransferSlot) void {
@@ -307,8 +312,16 @@ fn drainTransfers(ctx: *c.libusb_context, slots: []TransferSlot, shared: *Shared
 }
 
 fn openFirstSupportedDevice(ctx: *c.libusb_context) !OpenedCaptureDevice {
+    var saw_open_failure = false;
     for (device.supported_pxlogic_ids) |id| {
-        if (try usb.openFirstDeviceByVidPid(ctx, id.vid, id.pid)) |handle| {
+        const handle_opt = usb.openFirstDeviceByVidPid(ctx, id.vid, id.pid) catch |err| switch (err) {
+            error.LibusbOpenFailed => {
+                saw_open_failure = true;
+                continue;
+            },
+            else => return err,
+        };
+        if (handle_opt) |handle| {
             return .{
                 .handle = handle,
                 .vid = id.vid,
@@ -317,6 +330,7 @@ fn openFirstSupportedDevice(ctx: *c.libusb_context) !OpenedCaptureDevice {
         }
     }
 
+    if (saw_open_failure) return error.LibusbOpenFailed;
     return error.NoSupportedDevicesFound;
 }
 
@@ -351,4 +365,28 @@ fn transferStatusName(status: u32) []const u8 {
         c.LIBUSB_TRANSFER_OVERFLOW => "OVERFLOW",
         else => "UNKNOWN",
     };
+}
+
+test "pushTransferPayload tracks only bytes accepted by ringbuffer" {
+    var rb = try ringbuffer.RingBuffer.init(std.testing.allocator, 4);
+    defer rb.deinit();
+
+    var shared = SharedState{
+        .ring = &rb,
+        .stop_requested = std.atomic.Value(bool).init(false),
+        .producer_done = std.atomic.Value(bool).init(false),
+        .active_submissions = std.atomic.Value(u32).init(0),
+        .bytes_in = std.atomic.Value(u64).init(0),
+        .transfer_failed = std.atomic.Value(bool).init(false),
+        .first_failure_status = std.atomic.Value(u32).init(no_failure_status),
+    };
+
+    const first = [_]u8{ 0x01, 0x02, 0x03 };
+    pushTransferPayload(&shared, first[0..]);
+    try std.testing.expectEqual(@as(u64, 3), shared.bytes_in.load(.acquire));
+
+    const second = [_]u8{ 0x11, 0x12, 0x13 };
+    pushTransferPayload(&shared, second[0..]);
+    try std.testing.expectEqual(@as(u64, 4), shared.bytes_in.load(.acquire));
+    try std.testing.expectEqual(@as(u64, 2), rb.dropped());
 }

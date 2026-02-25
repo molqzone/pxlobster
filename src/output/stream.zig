@@ -204,6 +204,17 @@ fn writeLeU32(dst: []u8, value: u32) void {
     dst[3] = @intCast((value >> 24) & 0x000000FF);
 }
 
+fn readLeU16(src: []const u8) u16 {
+    return @as(u16, src[0]) | (@as(u16, src[1]) << 8);
+}
+
+fn readLeU32(src: []const u8) u32 {
+    return @as(u32, src[0]) |
+        (@as(u32, src[1]) << 8) |
+        (@as(u32, src[2]) << 16) |
+        (@as(u32, src[3]) << 24);
+}
+
 test "decodeCrossDataChunk decodes 16-channel stripes into packed samples" {
     var input: [16 * 8]u8 = [_]u8{0} ** (16 * 8);
     var output: [16 * 8]u8 = [_]u8{0} ** (16 * 8);
@@ -220,10 +231,114 @@ test "decodeCrossDataChunk decodes 16-channel stripes into packed samples" {
 
     var sample_index: usize = 0;
     while (sample_index < 64) : (sample_index += 1) {
-        const lo = @as(u16, output[sample_index * 2]);
-        const hi = @as(u16, output[sample_index * 2 + 1]) << 8;
-        const sample = lo | hi;
+        const sample = readLeU16(output[sample_index * 2 .. sample_index * 2 + 2]);
         const expected: u16 = if (sample_index % 2 == 0) 0 else 1;
+        try std.testing.expectEqual(expected, sample);
+    }
+}
+
+test "decodeCrossDataChunk decodes 32-channel stripes into packed samples" {
+    var input: [32 * 8]u8 = [_]u8{0} ** (32 * 8);
+    var output: [32 * 8]u8 = [_]u8{0} ** (32 * 8);
+
+    const ch0_word: u64 = 0xAAAA_AAAA_AAAA_AAAA;
+    const ch31_word: u64 = 0xFFFF_FFFF_FFFF_FFFF;
+    var i: usize = 0;
+    while (i < 8) : (i += 1) {
+        input[i] = @intCast((ch0_word >> @as(u6, @intCast(i * 8))) & 0xFF);
+        input[31 * 8 + i] = @intCast((ch31_word >> @as(u6, @intCast(i * 8))) & 0xFF);
+    }
+
+    const produced = try decodeCrossDataChunk(32, input[0..], output[0..]);
+    try std.testing.expectEqual(@as(usize, input.len), produced);
+
+    var sample_index: usize = 0;
+    while (sample_index < 64) : (sample_index += 1) {
+        const sample = readLeU32(output[sample_index * 4 .. sample_index * 4 + 4]);
+        const low_bit: u32 = if (sample_index % 2 == 0) 0 else 1;
+        const expected: u32 = 0x8000_0000 | low_bit;
+        try std.testing.expectEqual(expected, sample);
+    }
+}
+
+const DecodeCarryProducer = struct {
+    ring: *ringbuffer.RingBuffer,
+    producer_done: *std.atomic.Value(bool),
+    first_chunk: []const u8,
+    second_chunk: []const u8,
+
+    fn run(ctx: *DecodeCarryProducer) void {
+        _ = ctx.ring.push(ctx.first_chunk);
+        std.Thread.sleep(2 * std.time.ns_per_ms);
+        _ = ctx.ring.push(ctx.second_chunk);
+        ctx.producer_done.store(true, .release);
+    }
+};
+
+test "runRawWriter decodes cross data across split chunks" {
+    var rb = try ringbuffer.RingBuffer.init(std.testing.allocator, 512);
+    defer rb.deinit();
+
+    var input: [16 * 8 * 2]u8 = [_]u8{0} ** (16 * 8 * 2);
+    const stripe_size = 16 * 8;
+
+    const stripe_a: u64 = 0xAAAA_AAAA_AAAA_AAAA;
+    const stripe_b: u64 = 0x5555_5555_5555_5555;
+    var i: usize = 0;
+    while (i < 8) : (i += 1) {
+        input[i] = @intCast((stripe_a >> @as(u6, @intCast(i * 8))) & 0xFF);
+        input[stripe_size + i] = @intCast((stripe_b >> @as(u6, @intCast(i * 8))) & 0xFF);
+    }
+
+    var producer_done = std.atomic.Value(bool).init(false);
+    var stop_requested = std.atomic.Value(bool).init(false);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file = try tmp.dir.createFile("decoded.bin", .{ .read = true });
+    defer file.close();
+
+    var writer_ctx = RawWriterContext{
+        .ring = &rb,
+        .file = file,
+        .target_bytes = input.len,
+        .decode_cross = true,
+        .channel_count = 16,
+        .producer_done = &producer_done,
+        .stop_requested = &stop_requested,
+    };
+
+    var producer_ctx = DecodeCarryProducer{
+        .ring = &rb,
+        .producer_done = &producer_done,
+        .first_chunk = input[0..192],
+        .second_chunk = input[192..],
+    };
+    const producer_thread = try std.Thread.spawn(.{}, DecodeCarryProducer.run, .{&producer_ctx});
+    defer producer_thread.join();
+
+    runRawWriter(&writer_ctx);
+
+    try std.testing.expect(!writer_ctx.failed.load(.acquire));
+    try std.testing.expectEqual(@as(u64, input.len), writer_ctx.bytes_written.load(.acquire));
+
+    try file.seekTo(0);
+    var decoded: [16 * 8 * 2]u8 = undefined;
+    const read_len = try file.readAll(decoded[0..]);
+    try std.testing.expectEqual(decoded.len, read_len);
+
+    var sample_index: usize = 0;
+    while (sample_index < 64) : (sample_index += 1) {
+        const sample = readLeU16(decoded[sample_index * 2 .. sample_index * 2 + 2]);
+        const expected: u16 = if (sample_index % 2 == 0) 0 else 1;
+        try std.testing.expectEqual(expected, sample);
+    }
+
+    sample_index = 0;
+    while (sample_index < 64) : (sample_index += 1) {
+        const offset = stripe_size + sample_index * 2;
+        const sample = readLeU16(decoded[offset .. offset + 2]);
+        const expected: u16 = if (sample_index % 2 == 0) 1 else 0;
         try std.testing.expectEqual(expected, sample);
     }
 }

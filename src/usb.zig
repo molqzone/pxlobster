@@ -123,17 +123,25 @@ pub fn openFirstDeviceByVidPid(ctx: *c.libusb_context, vid: u16, pid: u16) !?*c.
     if (count < 0) return error.LibusbGetDeviceListFailed;
     defer c.libusb_free_device_list(device_list, 1);
 
+    var matched_device = false;
+    var open_failed = false;
     const count_usize: usize = @intCast(count);
     const device_slice = @as([*]?*c.libusb_device, @ptrCast(device_list))[0..count_usize];
     for (device_slice) |dev_opt| {
         if (dev_opt == null) continue;
         if (snapshotFromDevice(dev_opt.?)) |snapshot| {
             if (snapshot.vid == vid and snapshot.pid == pid) {
-                return openDevice(dev_opt.?);
+                matched_device = true;
+                const opened = openDevice(dev_opt.?) catch {
+                    open_failed = true;
+                    continue;
+                };
+                return opened;
             }
         }
     }
 
+    if (matched_device and open_failed) return error.LibusbOpenFailed;
     return null;
 }
 
