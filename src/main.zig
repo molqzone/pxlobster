@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const capture = @import("capture.zig");
 const device = @import("device.zig");
 const usb = @import("usb.zig");
 
@@ -29,12 +30,21 @@ pub fn main() !void {
     switch (cmd) {
         .scan => try scanUsbDevices(stdout),
         .prime_fw => try primeFirmware(stdout),
+        .capture => |options| try runCapture(options, stdout, stderr),
     }
 }
 
-const Command = enum {
+const default_capture_samples_bytes: usize = 8 * 1024 * 1024;
+
+const CaptureCommand = struct {
+    output_path: []const u8,
+    sample_bytes: usize = default_capture_samples_bytes,
+};
+
+const Command = union(enum) {
     scan,
     prime_fw,
+    capture: CaptureCommand,
 };
 
 const LogicModeProbe = union(enum) {
@@ -47,17 +57,33 @@ fn parseArgs() !Command {
     var args = std.process.args();
     _ = args.next();
     const stdout = std.fs.File.stdout().deprecatedWriter();
-    var requested: ?Command = null;
+    var requested_read_only: ?enum { scan, prime_fw } = null;
+    var output_path: ?[]const u8 = null;
+    var sample_bytes: usize = default_capture_samples_bytes;
+    var samples_set = false;
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--scan")) {
-            if (requested != null and requested.? != .scan) return error.InvalidArgument;
-            requested = .scan;
+            if (requested_read_only != null and requested_read_only.? != .scan) return error.InvalidArgument;
+            requested_read_only = .scan;
             continue;
         }
         if (std.mem.eql(u8, arg, "--prime-fw")) {
-            if (requested != null and requested.? != .prime_fw) return error.InvalidArgument;
-            requested = .prime_fw;
+            if (requested_read_only != null and requested_read_only.? != .prime_fw) return error.InvalidArgument;
+            requested_read_only = .prime_fw;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output-file")) {
+            const value = args.next() orelse return error.InvalidArgument;
+            if (value.len == 0) return error.InvalidArgument;
+            output_path = value;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--samples")) {
+            const value = args.next() orelse return error.InvalidArgument;
+            sample_bytes = std.fmt.parseInt(usize, value, 10) catch return error.InvalidArgument;
+            if (sample_bytes == 0) return error.InvalidArgument;
+            samples_set = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
@@ -67,9 +93,23 @@ fn parseArgs() !Command {
         return error.InvalidArgument;
     }
 
-    if (requested) |cmd| return cmd;
+    const capture_requested = output_path != null or samples_set;
+    if (requested_read_only != null and capture_requested) return error.InvalidArgument;
 
-    try printUsage(stdout);
+    if (requested_read_only) |command| {
+        return switch (command) {
+            .scan => .scan,
+            .prime_fw => .prime_fw,
+        };
+    }
+
+    if (output_path) |path| {
+        return .{ .capture = .{
+            .output_path = path,
+            .sample_bytes = sample_bytes,
+        } };
+    }
+
     return error.InvalidArgument;
 }
 
@@ -78,14 +118,17 @@ fn printUsage(writer: anytype) !void {
         \\Usage:
         \\  pxlobster --scan
         \\  pxlobster --prime-fw
+        \\  pxlobster -o <path> [--samples <bytes>]
         \\
         \\Options:
         \\  --scan               Read-only scan for supported PX Logic devices.
         \\  --prime-fw           Inject firmware to detected PX Logic devices.
+        \\  -o, --output-file    Capture raw samples to output file.
+        \\  --samples            Capture bytes target (default: 8388608).
         \\  -h, --help           Show this help.
         \\
         \\Notes:
-        \\  --scan and --prime-fw are mutually exclusive.
+        \\  --scan, --prime-fw, and capture mode are mutually exclusive.
         \\
     );
 }
@@ -177,6 +220,30 @@ fn primeFirmware(writer: anytype) !void {
     }
 }
 
+fn runCapture(cmd: CaptureCommand, stdout: anytype, stderr: anytype) !void {
+    if (comptime builtin.is_test) {
+        return;
+    } else {
+        var ctx: ?*c.libusb_context = null;
+        const init_rc = c.libusb_init(&ctx);
+        if (init_rc != 0 or ctx == null) return error.LibusbInitFailed;
+        defer c.libusb_exit(ctx);
+
+        const stats = capture.runCaptureToFile(std.heap.page_allocator, ctx.?, .{
+            .output_path = cmd.output_path,
+            .sample_bytes = cmd.sample_bytes,
+        }) catch |err| {
+            try stderr.print("capture failed: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
+
+        try stdout.print(
+            "capture complete: file={s} bytes_out={d} bytes_in={d} dropped={d} elapsed_ms={d}\n",
+            .{ cmd.output_path, stats.bytes_out, stats.bytes_in, stats.dropped, stats.elapsed_ms },
+        );
+    }
+}
+
 fn detectTag(dev: *c.libusb_device, vid: u16, pid: u16) ?[]const u8 {
     if (comptime builtin.is_test) {
         return modelLabelForIdentity(vid, pid, c.LIBUSB_SPEED_HIGH, .unavailable);
@@ -184,13 +251,13 @@ fn detectTag(dev: *c.libusb_device, vid: u16, pid: u16) ?[]const u8 {
         if (!device.isSupportedPxLogic(vid, pid)) return null;
 
         const usb_speed = c.libusb_get_device_speed(dev);
-        const logic_mode: LogicModeProbe = if (vid == 0x16C0 and pid == 0x05DC) readLogicMode(dev) else .unavailable;
+        const logic_mode: LogicModeProbe = if (device.isLegacyPxLogic(vid, pid)) readLogicMode(dev) else .unavailable;
         return modelLabelForIdentity(vid, pid, usb_speed, logic_mode) orelse "PX-Logic (ready)";
     }
 }
 
 fn modelLabelForIdentity(vid: u16, pid: u16, usb_speed: c_int, logic_mode: LogicModeProbe) ?[]const u8 {
-    if (vid == 0x1A86 and pid == 0x5237) {
+    if (device.isWchPxLogic(vid, pid)) {
         return switch (usb_speed) {
             c.LIBUSB_SPEED_SUPER => "PX-Logic U3 channel 32",
             c.LIBUSB_SPEED_HIGH => "PX-Logic U2 channel 32",
@@ -198,7 +265,7 @@ fn modelLabelForIdentity(vid: u16, pid: u16, usb_speed: c_int, logic_mode: Logic
         };
     }
 
-    if (vid == 0x16C0 and pid == 0x05DC) {
+    if (device.isLegacyPxLogic(vid, pid)) {
         return switch (logic_mode) {
             .busy => "PX-Logic (Busy)",
             .value => |mode| switch (mode) {
@@ -275,12 +342,30 @@ fn isPxManufacturer(handle: *c.libusb_device_handle, manufacturer_index: u8) boo
 }
 
 test "modelLabelForIdentity matches PX Logic profiles" {
-    try std.testing.expectEqualStrings("PX-Logic U3 channel 32", modelLabelForIdentity(0x1A86, 0x5237, c.LIBUSB_SPEED_SUPER, .unavailable).?);
-    try std.testing.expectEqualStrings("PX-Logic U2 channel 32", modelLabelForIdentity(0x1A86, 0x5237, c.LIBUSB_SPEED_HIGH, .unavailable).?);
-    try std.testing.expectEqualStrings("PX-Logic U3 channel 16 Pro", modelLabelForIdentity(0x16C0, 0x05DC, c.LIBUSB_SPEED_SUPER, .{ .value = 1 }).?);
-    try std.testing.expectEqualStrings("PX-Logic U2 channel 16 Plus", modelLabelForIdentity(0x16C0, 0x05DC, c.LIBUSB_SPEED_HIGH, .{ .value = 2 }).?);
-    try std.testing.expectEqualStrings("PX-Logic U3 (mode unknown)", modelLabelForIdentity(0x16C0, 0x05DC, c.LIBUSB_SPEED_SUPER, .unavailable).?);
-    try std.testing.expectEqualStrings("PX-Logic (Busy)", modelLabelForIdentity(0x16C0, 0x05DC, c.LIBUSB_SPEED_HIGH, .busy).?);
+    try std.testing.expectEqualStrings(
+        "PX-Logic U3 channel 32",
+        modelLabelForIdentity(device.pxlogic_wch_id.vid, device.pxlogic_wch_id.pid, c.LIBUSB_SPEED_SUPER, .unavailable).?,
+    );
+    try std.testing.expectEqualStrings(
+        "PX-Logic U2 channel 32",
+        modelLabelForIdentity(device.pxlogic_wch_id.vid, device.pxlogic_wch_id.pid, c.LIBUSB_SPEED_HIGH, .unavailable).?,
+    );
+    try std.testing.expectEqualStrings(
+        "PX-Logic U3 channel 16 Pro",
+        modelLabelForIdentity(device.pxlogic_legacy_id.vid, device.pxlogic_legacy_id.pid, c.LIBUSB_SPEED_SUPER, .{ .value = 1 }).?,
+    );
+    try std.testing.expectEqualStrings(
+        "PX-Logic U2 channel 16 Plus",
+        modelLabelForIdentity(device.pxlogic_legacy_id.vid, device.pxlogic_legacy_id.pid, c.LIBUSB_SPEED_HIGH, .{ .value = 2 }).?,
+    );
+    try std.testing.expectEqualStrings(
+        "PX-Logic U3 (mode unknown)",
+        modelLabelForIdentity(device.pxlogic_legacy_id.vid, device.pxlogic_legacy_id.pid, c.LIBUSB_SPEED_SUPER, .unavailable).?,
+    );
+    try std.testing.expectEqualStrings(
+        "PX-Logic (Busy)",
+        modelLabelForIdentity(device.pxlogic_legacy_id.vid, device.pxlogic_legacy_id.pid, c.LIBUSB_SPEED_HIGH, .busy).?,
+    );
 }
 
 test "modelLabelForIdentity returns null for unknown IDs" {

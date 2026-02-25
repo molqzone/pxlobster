@@ -1,4 +1,11 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const firmware = if (builtin.is_test) struct {
+    // Single-file `zig test src/main.zig` has no build.zig module graph.
+    // Keep test-only payloads non-empty so compile-time guards still hold.
+    pub const fpga_reset_bitstream: []const u8 = &[_]u8{0};
+    pub const fpga_bitstream: []const u8 = &[_]u8{0};
+} else @import("pxresources");
 const usb = @import("usb.zig");
 
 const c = usb.c;
@@ -13,22 +20,43 @@ pub const BootstrapOptions = struct {
     bulk_timeout_ms: u32 = 0,
 };
 
-pub const fpga_reset_bitstream = @embedFile("firmware/fpga_rst.bin");
-pub const fpga_bitstream = @embedFile("firmware/fpga.bin");
+pub const fpga_reset_bitstream = firmware.fpga_reset_bitstream;
+pub const fpga_bitstream = firmware.fpga_bitstream;
 
-const pxlogic_wch_vid: u16 = 0x1A86;
-const pxlogic_wch_pid: u16 = 0x5237;
-const pxlogic_legacy_vid: u16 = 0x16C0;
-const pxlogic_legacy_pid: u16 = 0x05DC;
+pub const UsbId = struct {
+    vid: u16,
+    pid: u16,
+};
+
+pub const pxlogic_wch_id = UsbId{ .vid = 0x1A86, .pid = 0x5237 };
+pub const pxlogic_legacy_id = UsbId{ .vid = 0x16C0, .pid = 0x05DC };
+pub const supported_pxlogic_ids = [_]UsbId{
+    pxlogic_wch_id,
+    pxlogic_legacy_id,
+};
 
 comptime {
-    if (fpga_reset_bitstream.len == 0) @compileError("firmware/fpga_rst.bin must not be empty");
-    if (fpga_bitstream.len == 0) @compileError("firmware/fpga.bin must not be empty");
+    if (fpga_reset_bitstream.len == 0) @compileError("resources/hspi_ddr_RST.bin must not be empty");
+    if (fpga_bitstream.len == 0) @compileError("resources/hspi_ddr.bin must not be empty");
 }
 
 pub fn isSupportedPxLogic(vid: u16, pid: u16) bool {
-    return (vid == pxlogic_wch_vid and pid == pxlogic_wch_pid) or
-        (vid == pxlogic_legacy_vid and pid == pxlogic_legacy_pid);
+    for (supported_pxlogic_ids) |id| {
+        if (isExactId(id, vid, pid)) return true;
+    }
+    return false;
+}
+
+pub fn isWchPxLogic(vid: u16, pid: u16) bool {
+    return isExactId(pxlogic_wch_id, vid, pid);
+}
+
+pub fn isLegacyPxLogic(vid: u16, pid: u16) bool {
+    return isExactId(pxlogic_legacy_id, vid, pid);
+}
+
+pub fn isExactId(id: UsbId, vid: u16, pid: u16) bool {
+    return id.vid == vid and id.pid == pid;
 }
 
 pub fn preparePxLogicDevice(dev: *c.libusb_device, options: BootstrapOptions) BootstrapState {
@@ -72,9 +100,18 @@ fn configureFpgaBitstream(handle: *c.libusb_device_handle, options: BootstrapOpt
 }
 
 test "id classification helpers are correct" {
-    try std.testing.expect(isSupportedPxLogic(0x1A86, 0x5237));
-    try std.testing.expect(isSupportedPxLogic(0x16C0, 0x05DC));
+    try std.testing.expect(isSupportedPxLogic(pxlogic_wch_id.vid, pxlogic_wch_id.pid));
+    try std.testing.expect(isSupportedPxLogic(pxlogic_legacy_id.vid, pxlogic_legacy_id.pid));
+    try std.testing.expect(isWchPxLogic(pxlogic_wch_id.vid, pxlogic_wch_id.pid));
+    try std.testing.expect(isLegacyPxLogic(pxlogic_legacy_id.vid, pxlogic_legacy_id.pid));
     try std.testing.expect(!isSupportedPxLogic(0x046D, 0xC52B));
+}
+
+test "supported_pxlogic_ids provides canonical ID list" {
+    try std.testing.expectEqual(@as(usize, 2), supported_pxlogic_ids.len);
+    try std.testing.expect(isExactId(supported_pxlogic_ids[0], pxlogic_wch_id.vid, pxlogic_wch_id.pid));
+    try std.testing.expect(isExactId(supported_pxlogic_ids[1], pxlogic_legacy_id.vid, pxlogic_legacy_id.pid));
+    try std.testing.expect(!isExactId(supported_pxlogic_ids[0], pxlogic_legacy_id.vid, pxlogic_legacy_id.pid));
 }
 
 test "embedded firmware payloads are non-empty" {
