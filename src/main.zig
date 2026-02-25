@@ -1,9 +1,12 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const device = @import("device.zig");
+const usb = @import("usb.zig");
 
 const TestLibUsb = struct {
     pub const LIBUSB_SPEED_HIGH: c_int = 3;
     pub const LIBUSB_SPEED_SUPER: c_int = 4;
+    pub const libusb_context = opaque {};
     pub const libusb_device = opaque {};
     pub const libusb_device_handle = opaque {};
 };
@@ -18,18 +21,20 @@ pub fn main() !void {
         error.ShowHelp => return,
         error.InvalidArgument => {
             try printUsage(stderr);
-            return err;
+            std.process.exit(2);
         },
         else => return err,
     };
 
     switch (cmd) {
         .scan => try scanUsbDevices(stdout),
+        .prime_fw => try primeFirmware(stdout),
     }
 }
 
 const Command = enum {
     scan,
+    prime_fw,
 };
 
 const LogicModeProbe = union(enum) {
@@ -42,15 +47,27 @@ fn parseArgs() !Command {
     var args = std.process.args();
     _ = args.next();
     const stdout = std.fs.File.stdout().deprecatedWriter();
+    var requested: ?Command = null;
 
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--scan")) return .scan;
+        if (std.mem.eql(u8, arg, "--scan")) {
+            if (requested != null and requested.? != .scan) return error.InvalidArgument;
+            requested = .scan;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--prime-fw")) {
+            if (requested != null and requested.? != .prime_fw) return error.InvalidArgument;
+            requested = .prime_fw;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             try printUsage(stdout);
             return error.ShowHelp;
         }
         return error.InvalidArgument;
     }
+
+    if (requested) |cmd| return cmd;
 
     try printUsage(stdout);
     return error.InvalidArgument;
@@ -60,10 +77,15 @@ fn printUsage(writer: anytype) !void {
     try writer.writeAll(
         \\Usage:
         \\  pxlobster --scan
+        \\  pxlobster --prime-fw
         \\
         \\Options:
-        \\  --scan       Enumerate supported PX Logic USB devices.
-        \\  -h, --help   Show this help.
+        \\  --scan               Read-only scan for supported PX Logic devices.
+        \\  --prime-fw           Inject firmware to detected PX Logic devices.
+        \\  -h, --help           Show this help.
+        \\
+        \\Notes:
+        \\  --scan and --prime-fw are mutually exclusive.
         \\
     );
 }
@@ -77,8 +99,10 @@ fn scanUsbDevices(writer: anytype) !void {
         if (init_rc != 0 or ctx == null) return error.LibusbInitFailed;
         defer c.libusb_exit(ctx);
 
+        const active_ctx = ctx.?;
+
         var device_list: [*c]?*c.libusb_device = undefined;
-        const count = c.libusb_get_device_list(ctx, &device_list);
+        const count = c.libusb_get_device_list(active_ctx, &device_list);
         if (count < 0) return error.LibusbGetDeviceListFailed;
         defer c.libusb_free_device_list(device_list, 1);
 
@@ -106,13 +130,62 @@ fn scanUsbDevices(writer: anytype) !void {
     }
 }
 
+fn primeFirmware(writer: anytype) !void {
+    if (comptime builtin.is_test) {
+        return;
+    } else {
+        var ctx: ?*c.libusb_context = null;
+        const init_rc = c.libusb_init(&ctx);
+        if (init_rc != 0 or ctx == null) return error.LibusbInitFailed;
+        defer c.libusb_exit(ctx);
+
+        const active_ctx = ctx.?;
+
+        var device_list: [*c]?*c.libusb_device = undefined;
+        const count = c.libusb_get_device_list(active_ctx, &device_list);
+        if (count < 0) return error.LibusbGetDeviceListFailed;
+        defer c.libusb_free_device_list(device_list, 1);
+
+        var found_supported = false;
+        const count_usize: usize = @intCast(count);
+        const device_slice = @as([*]?*c.libusb_device, @ptrCast(device_list))[0..count_usize];
+        for (device_slice) |dev_opt| {
+            if (dev_opt == null) continue;
+
+            var desc: c.libusb_device_descriptor = undefined;
+            if (c.libusb_get_device_descriptor(dev_opt.?, &desc) != 0) continue;
+
+            const vid: u16 = @intCast(desc.idVendor);
+            const pid: u16 = @intCast(desc.idProduct);
+            if (!device.isSupportedPxLogic(vid, pid)) continue;
+            found_supported = true;
+
+            const state = device.preparePxLogicDevice(dev_opt.?, .{});
+            switch (state) {
+                .ready => {
+                    const label = detectTag(dev_opt.?, vid, pid) orelse "PX-Logic (ready)";
+                    try writer.print("{X:0>4}:{X:0>4}  {s}  [fw loaded]\n", .{ vid, pid, label });
+                },
+                .busy => try writer.print("{X:0>4}:{X:0>4}  PX-Logic (Busy)\n", .{ vid, pid }),
+                .failed => try writer.print("{X:0>4}:{X:0>4}  PX-Logic (firmware load failed)\n", .{ vid, pid }),
+            }
+        }
+
+        if (!found_supported) {
+            try writer.writeAll("No supported devices found.\n");
+        }
+    }
+}
+
 fn detectTag(dev: *c.libusb_device, vid: u16, pid: u16) ?[]const u8 {
     if (comptime builtin.is_test) {
         return modelLabelForIdentity(vid, pid, c.LIBUSB_SPEED_HIGH, .unavailable);
     } else {
+        if (!device.isSupportedPxLogic(vid, pid)) return null;
+
         const usb_speed = c.libusb_get_device_speed(dev);
         const logic_mode: LogicModeProbe = if (vid == 0x16C0 and pid == 0x05DC) readLogicMode(dev) else .unavailable;
-        return modelLabelForIdentity(vid, pid, usb_speed, logic_mode);
+        return modelLabelForIdentity(vid, pid, usb_speed, logic_mode) orelse "PX-Logic (ready)";
     }
 }
 
@@ -184,19 +257,8 @@ fn readLogicMode(dev: *c.libusb_device) LogicModeProbe {
         if (c.libusb_claim_interface(handle, 1) != 0) return .busy;
         defer _ = c.libusb_release_interface(handle, 1);
 
-        var packet = [_]u32{
-            0xfefe0001,
-            0x08,
-            8192 + 22 * 4,
-            0,
-        };
-        const bytes = std.mem.asBytes(&packet);
-        const packet_ptr: [*c]u8 = @ptrCast(bytes.ptr);
-
-        if (c.libusb_bulk_transfer(handle, 0x01, packet_ptr, @intCast(bytes.len), null, 1000) != 0) return .unavailable;
-        if (c.libusb_bulk_transfer(handle, 0x81, packet_ptr, @intCast(bytes.len), null, 1000) != 0) return .unavailable;
-
-        return .{ .value = packet[3] };
+        const mode = usb.readRegister(handle, usb.REG_LOGIC_MODE, usb.DEFAULT_REGISTER_TIMEOUT_MS) catch return .unavailable;
+        return .{ .value = mode };
     }
 }
 
@@ -207,8 +269,7 @@ fn isPxManufacturer(handle: *c.libusb_device_handle, manufacturer_index: u8) boo
         if (manufacturer_index == 0) return false;
 
         var buf: [64]u8 = undefined;
-        const buf_ptr: [*c]u8 = @ptrCast(buf[0..].ptr);
-        const len = c.libusb_get_string_descriptor_ascii(handle, manufacturer_index, buf_ptr, @intCast(buf.len));
+        const len = c.libusb_get_string_descriptor_ascii(handle, manufacturer_index, &buf, @intCast(buf.len));
         return len >= 2 and buf[0] == 'P' and buf[1] == 'X';
     }
 }
