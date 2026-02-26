@@ -5,15 +5,19 @@ const usb = @import("usb.zig");
 const ringbuffer = @import("ringbuffer.zig");
 const stream = @import("output/stream.zig");
 const session = @import("output/session.zig");
+const srzip = @import("output/srzip.zig");
 
 const c = usb.c;
 const no_failure_status: u32 = std.math.maxInt(u32);
 const supports_posix_sigint = builtin.os.tag != .windows and builtin.os.tag != .wasi;
 var loop_interrupt_requested = std.atomic.Value(bool).init(false);
 
+pub const OutputFormat = session.OutputFormat;
+
 pub const CaptureOptions = struct {
     output_path: []const u8,
     sample_bytes: usize,
+    output_format: OutputFormat = .bin,
     decode_cross: bool = false,
     capture_profile: usb.CaptureProfile = .{},
     ring_capacity_bytes: usize = ringbuffer.default_capacity_bytes,
@@ -141,7 +145,22 @@ pub fn runCaptureToFile(
         }
     }
 
-    const output_file = try std.fs.cwd().createFile(options.output_path, .{ .truncate = true });
+    var temp_output_path: ?[]u8 = null;
+    defer if (temp_output_path) |path| {
+        std.fs.cwd().deleteFile(path) catch {};
+        allocator.free(path);
+    };
+
+    const capture_output_path: []const u8 = blk: {
+        if (options.output_format == .sr) {
+            const temp_path = try std.fmt.allocPrint(allocator, "{s}.pxlobster.raw.tmp", .{options.output_path});
+            temp_output_path = temp_path;
+            break :blk temp_path;
+        }
+        break :blk options.output_path;
+    };
+
+    const output_file = try std.fs.cwd().createFile(capture_output_path, .{ .truncate = true });
     defer output_file.close();
 
     const loop_mode = options.capture_profile.op_mode == .loop;
@@ -315,11 +334,23 @@ pub fn runCaptureToFile(
     const bytes_out = writer_ctx.bytes_written.load(.acquire);
     if (!loop_mode and bytes_out != options.sample_bytes) return error.CaptureIncomplete;
 
+    if (options.output_format == .sr) {
+        const raw_path = temp_output_path orelse return error.OutputPathMissing;
+        try output_file.sync();
+        try srzip.writeSessionFromRawFile(allocator, .{
+            .output_path = options.output_path,
+            .raw_path = raw_path,
+            .samplerate_hz = options.capture_profile.samplerate_hz,
+            .channel_count = capture_channel_count,
+        });
+    }
+
     return .{
         .bytes_in = shared.bytes_in.load(.acquire),
         .bytes_out = bytes_out,
         .dropped = ring.dropped(),
         .elapsed_ms = @intCast(elapsed_ns / std.time.ns_per_ms),
+        .channel_count = capture_channel_count,
     };
 }
 
@@ -576,10 +607,10 @@ test "visitCandidateIndexesByPriority stops when visitor returns true" {
 }
 
 test "openSelectionFailure prioritizes prime errors over open failures" {
-    try std.testing.expectError(error.PxLogicPrimeFailed, openSelectionFailure(true, true, true));
-    try std.testing.expectError(error.PxLogicPrimeBusy, openSelectionFailure(true, true, false));
-    try std.testing.expectError(error.LibusbOpenFailed, openSelectionFailure(true, false, false));
-    try std.testing.expectError(error.NoSupportedDevicesFound, openSelectionFailure(false, false, false));
+    try std.testing.expectEqual(error.PxLogicPrimeFailed, openSelectionFailure(true, true, true));
+    try std.testing.expectEqual(error.PxLogicPrimeBusy, openSelectionFailure(true, true, false));
+    try std.testing.expectEqual(error.LibusbOpenFailed, openSelectionFailure(true, false, false));
+    try std.testing.expectEqual(error.NoSupportedDevicesFound, openSelectionFailure(false, false, false));
 }
 
 test "pushTransferPayload tracks only bytes accepted by ringbuffer" {

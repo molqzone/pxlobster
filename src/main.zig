@@ -38,6 +38,7 @@ const default_capture_samples_bytes: usize = 8 * 1024 * 1024;
 
 const CaptureCommand = struct {
     output_path: []const u8,
+    output_format: capture.OutputFormat = .bin,
     sample_bytes: usize = default_capture_samples_bytes,
     decode_cross: bool = false,
     op_mode: usb.OperationMode = .buffer,
@@ -87,6 +88,11 @@ fn parseArgs() !Command {
             output_path = value;
             continue;
         }
+        if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--config")) {
+            const value = args.next() orelse return error.InvalidArgument;
+            applyConfigKV(value, &samplerate_hz, &samplerate_set) catch return error.InvalidArgument;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--samples")) {
             const value = args.next() orelse return error.InvalidArgument;
             sample_bytes = std.fmt.parseInt(usize, value, 10) catch return error.InvalidArgument;
@@ -128,10 +134,12 @@ fn parseArgs() !Command {
     }
 
     if (output_path) |path| {
+        const output_format = inferOutputFormat(path);
         return .{ .capture = .{
             .output_path = path,
+            .output_format = output_format,
             .sample_bytes = sample_bytes,
-            .decode_cross = decode_cross,
+            .decode_cross = if (output_format == .sr) true else decode_cross,
             .op_mode = op_mode,
             .samplerate_hz = samplerate_hz,
         } };
@@ -145,12 +153,13 @@ fn printUsage(writer: anytype) !void {
         \\Usage:
         \\  pxlobster --scan
         \\  pxlobster --prime-fw
-        \\  pxlobster -o <path> [--samples <bytes>] [--decode-cross] [--op-mode <buffer|stream|loop>] [--samplerate <hz>]
+        \\  pxlobster -o <path> [-c <key=value>] [--samples <bytes>] [--decode-cross] [--op-mode <buffer|stream|loop>] [--samplerate <hz>]
         \\
         \\Options:
         \\  --scan               Read-only scan for supported PX Logic devices.
         \\  --prime-fw           Inject firmware to detected PX Logic devices.
-        \\  -o, --output-file    Capture raw samples to output file.
+        \\  -o, --output-file    Output file (.sr => Sigrok session, others => raw binary).
+        \\  -c, --config         Capture config key-value (e.g. samplerate=24M).
         \\  --samples            Capture bytes target for buffer/stream (default: 8388608).
         \\  --decode-cross       Decode PXView LA_CROSS_DATA into packed channel samples.
         \\  --op-mode            Capture operation mode: buffer | stream | loop (default: buffer).
@@ -262,6 +271,7 @@ fn runCapture(cmd: CaptureCommand, stdout: anytype, stderr: anytype) !void {
 
         const stats = capture.runCaptureToFile(std.heap.page_allocator, ctx.?, .{
             .output_path = cmd.output_path,
+            .output_format = cmd.output_format,
             .sample_bytes = cmd.sample_bytes,
             .decode_cross = cmd.decode_cross,
             .capture_profile = .{
@@ -291,6 +301,66 @@ fn parseSamplerate(value: []const u8) ?u64 {
     const samplerate = std.fmt.parseInt(u64, value, 10) catch return null;
     if (!usb.isSupportedSamplerate(samplerate)) return null;
     return samplerate;
+}
+
+fn parseSamplerateWithUnits(value: []const u8) ?u64 {
+    if (parseSamplerate(value)) |samplerate| return samplerate;
+
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (trimmed.len == 0 or trimmed.len > 32) return null;
+
+    var lowercase_storage: [32]u8 = undefined;
+    for (trimmed, 0..) |ch, i| lowercase_storage[i] = std.ascii.toLower(ch);
+    var token = lowercase_storage[0..trimmed.len];
+
+    if (std.mem.endsWith(u8, token, "hz")) {
+        token = token[0 .. token.len - 2];
+    }
+    if (token.len == 0) return null;
+
+    var multiplier: u64 = 1;
+    const suffix = token[token.len - 1];
+    if (suffix == 'k' or suffix == 'm' or suffix == 'g') {
+        multiplier = switch (suffix) {
+            'k' => 1_000,
+            'm' => 1_000_000,
+            'g' => 1_000_000_000,
+            else => unreachable,
+        };
+        token = token[0 .. token.len - 1];
+    }
+    if (token.len == 0) return null;
+
+    const base = std.fmt.parseInt(u64, token, 10) catch return null;
+    const samplerate = std.math.mul(u64, base, multiplier) catch return null;
+    if (!usb.isSupportedSamplerate(samplerate)) return null;
+    return samplerate;
+}
+
+fn applyConfigKV(
+    kv: []const u8,
+    samplerate_hz: *u64,
+    samplerate_set: *bool,
+) !void {
+    const separator = std.mem.indexOfScalar(u8, kv, '=') orelse return error.InvalidArgument;
+    const key = std.mem.trim(u8, kv[0..separator], " \t\r\n");
+    const value = std.mem.trim(u8, kv[separator + 1 ..], " \t\r\n");
+    if (key.len == 0 or value.len == 0) return error.InvalidArgument;
+
+    if (std.mem.eql(u8, key, "samplerate")) {
+        samplerate_hz.* = parseSamplerateWithUnits(value) orelse return error.InvalidArgument;
+        samplerate_set.* = true;
+        return;
+    }
+
+    return error.InvalidArgument;
+}
+
+fn inferOutputFormat(path: []const u8) capture.OutputFormat {
+    if (path.len >= 3 and std.ascii.eqlIgnoreCase(path[path.len - 3 ..], ".sr")) {
+        return .sr;
+    }
+    return .bin;
 }
 
 fn detectTag(dev: *c.libusb_device, vid: u16, pid: u16) ?[]const u8 {
@@ -431,8 +501,34 @@ test "parseOpMode accepts supported values" {
 
 test "parseSamplerate accepts only supported discrete values" {
     try std.testing.expectEqual(@as(u64, 250_000_000), parseSamplerate("250000000").?);
+    try std.testing.expectEqual(@as(u64, 24_000_000), parseSamplerate("24000000").?);
     try std.testing.expectEqual(@as(u64, 10_000_000), parseSamplerate("10000000").?);
     try std.testing.expect(parseSamplerate("123456789") == null);
     try std.testing.expect(parseSamplerate("0") == null);
     try std.testing.expect(parseSamplerate("abc") == null);
+}
+
+test "parseSamplerateWithUnits accepts supported unit suffixes" {
+    try std.testing.expectEqual(@as(u64, 24_000_000), parseSamplerateWithUnits("24M").?);
+    try std.testing.expectEqual(@as(u64, 25_000_000), parseSamplerateWithUnits("25M").?);
+    try std.testing.expectEqual(@as(u64, 10_000_000), parseSamplerateWithUnits("10mhz").?);
+    try std.testing.expectEqual(@as(u64, 500_000), parseSamplerateWithUnits("500k").?);
+    try std.testing.expect(parseSamplerateWithUnits("abc") == null);
+}
+
+test "applyConfigKV parses samplerate key" {
+    var samplerate_hz: u64 = usb.DEFAULT_CAPTURE_SAMPLERATE_HZ;
+    var samplerate_set = false;
+
+    try applyConfigKV("samplerate=24M", &samplerate_hz, &samplerate_set);
+    try std.testing.expect(samplerate_set);
+    try std.testing.expectEqual(@as(u64, 24_000_000), samplerate_hz);
+    try std.testing.expectError(error.InvalidArgument, applyConfigKV("samplerate=24X", &samplerate_hz, &samplerate_set));
+    try std.testing.expectError(error.InvalidArgument, applyConfigKV("unknown=1", &samplerate_hz, &samplerate_set));
+}
+
+test "inferOutputFormat auto-detects sr extension" {
+    try std.testing.expectEqual(capture.OutputFormat.sr, inferOutputFormat("capture.sr"));
+    try std.testing.expectEqual(capture.OutputFormat.sr, inferOutputFormat("CAPTURE.SR"));
+    try std.testing.expectEqual(capture.OutputFormat.bin, inferOutputFormat("capture.bin"));
 }
