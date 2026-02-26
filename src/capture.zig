@@ -12,6 +12,7 @@ pub const CaptureOptions = struct {
     output_path: []const u8,
     sample_bytes: usize,
     decode_cross: bool = false,
+    capture_profile: usb.CaptureProfile = .{},
     ring_capacity_bytes: usize = ringbuffer.default_capacity_bytes,
     transfer_size: usize = usb.DEFAULT_CAPTURE_TRANSFER_SIZE,
     transfer_count: usize = usb.DEFAULT_CAPTURE_TRANSFER_COUNT,
@@ -92,11 +93,12 @@ pub fn runCaptureToFile(
     const output_file = try std.fs.cwd().createFile(options.output_path, .{ .truncate = true });
     defer output_file.close();
 
-    try usb.prepareCaptureRegisters(
+    try usb.prepareCaptureRegistersWithProfile(
         handle,
         @intCast(options.transfer_size),
         @intCast(options.sample_bytes),
         capture_channel_count,
+        options.capture_profile,
         options.register_timeout_ms,
     );
     defer usb.stopCaptureRegisters(handle, options.register_timeout_ms) catch {};

@@ -43,16 +43,14 @@ pub const DEFAULT_CAPTURE_TRANSFER_SIZE: usize = 256 * 1024;
 pub const DEFAULT_CAPTURE_TRANSFER_COUNT: usize = 8;
 pub const DEFAULT_CAPTURE_EVENT_TIMEOUT_MS: u32 = 20;
 
-pub const STREAM_MODE_MASK: u32 = 0;
-pub const STREAM_ENABLE_FLAGS: u32 = 0x00000005 | STREAM_MODE_MASK;
-pub const STREAM_ENABLE_PULSE_FLAGS: u32 = STREAM_ENABLE_FLAGS | (1 << 4);
-pub const STREAM_RUN_FLAGS: u32 = STREAM_MODE_MASK;
+pub const STREAM_MODE_BIT: u32 = 1 << 1;
+pub const STREAM_ENABLE_FLAGS_BASE: u32 = 0x00000005;
+pub const STREAM_ENABLE_PULSE_FLAG: u32 = 1 << 4;
+pub const STREAM_FILTER_SHIFT: u5 = 3;
 pub const STREAM_START_FLAGS: u32 = 0x0000_0000;
 pub const STREAM_STOP_FLAGS: u32 = 0xFFFF_FFFF;
 pub const DEFAULT_CAPTURE_CHANNEL_COUNT: u32 = 16;
 pub const DEFAULT_CAPTURE_TRIGGER_POS: u32 = 64;
-pub const DEFAULT_GPIO_MODE: u32 = 2;
-pub const DEFAULT_GPIO_DIV: u32 = 0;
 pub const DEFAULT_EXT_TRIGGER_MODE: u32 = 0;
 pub const DEFAULT_TRIGGER_OUT_ENABLE: u32 = 0;
 pub const DEFAULT_TRIGGER_MASK: u32 = 0;
@@ -60,6 +58,8 @@ pub const DEFAULT_PWM_CLOCK_HZ: u32 = 120_000_000;
 pub const DEFAULT_THRESHOLD_PWM_FREQ_HZ: u32 = 10_000;
 pub const DEFAULT_VTH_VOLTS: f64 = 2.0;
 pub const DEFAULT_VTH_SCALE: f64 = 3.334;
+pub const DEFAULT_CAPTURE_SAMPLERATE_HZ: u64 = 250_000_000;
+pub const MAX_CAPTURE_REGISTER_WRITES: usize = 26;
 
 pub const DeviceSnapshot = struct {
     vid: u16,
@@ -73,6 +73,59 @@ pub const ControlStatus = extern struct {
     sync_cur_sample: u64,
     trig_out_validset: u32,
     real_pos: u32,
+};
+
+pub const OperationMode = enum {
+    buffer,
+    stream,
+    loop,
+};
+
+pub const CaptureProfile = struct {
+    op_mode: OperationMode = .buffer,
+    samplerate_hz: u64 = DEFAULT_CAPTURE_SAMPLERATE_HZ,
+    filter: u8 = 0,
+    clock_edge: u8 = 0,
+    ext_trigger_mode: u32 = DEFAULT_EXT_TRIGGER_MODE,
+    trigger_out_enable: u32 = DEFAULT_TRIGGER_OUT_ENABLE,
+    trigger_zero: u32 = DEFAULT_TRIGGER_MASK,
+    trigger_one: u32 = DEFAULT_TRIGGER_MASK,
+    trigger_rise: u32 = DEFAULT_TRIGGER_MASK,
+    trigger_fall: u32 = DEFAULT_TRIGGER_MASK,
+    trigger_pos: u32 = DEFAULT_CAPTURE_TRIGGER_POS,
+    vth_volts: f64 = DEFAULT_VTH_VOLTS,
+};
+
+pub const RegisterWrite = struct {
+    addr: u32,
+    value: u32,
+};
+
+pub const CaptureRegisterScript = struct {
+    writes: [MAX_CAPTURE_REGISTER_WRITES]RegisterWrite,
+    len: usize,
+
+    fn init() CaptureRegisterScript {
+        return .{
+            .writes = undefined,
+            .len = 0,
+        };
+    }
+
+    fn append(self: *CaptureRegisterScript, addr: u32, value: u32) !void {
+        if (self.len >= self.writes.len) return error.CaptureScriptTooLarge;
+        self.writes[self.len] = .{ .addr = addr, .value = value };
+        self.len += 1;
+    }
+
+    pub fn slice(self: *const CaptureRegisterScript) []const RegisterWrite {
+        return self.writes[0..self.len];
+    }
+};
+
+pub const GpioTiming = struct {
+    mode: u32,
+    div: u32,
 };
 
 pub fn listSnapshots(allocator: std.mem.Allocator, ctx: *c.libusb_context) ![]DeviceSnapshot {
@@ -306,7 +359,7 @@ pub fn writeDataUpdate(
     const pad_len = aligned_len - data.len;
     if (pad_len == 0) return;
 
-    var padding = [_]u8{0} ** page_size;
+    const padding = [_]u8{0} ** page_size;
     var remaining = pad_len;
     while (remaining > 0) {
         const chunk = @min(remaining, padding.len);
@@ -322,46 +375,140 @@ pub fn prepareCaptureRegisters(
     channel_count: u32,
     timeout_ms: u32,
 ) !void {
+    return prepareCaptureRegistersWithProfile(
+        handle,
+        transfer_size,
+        target_bytes,
+        channel_count,
+        .{},
+        timeout_ms,
+    );
+}
+
+pub fn prepareCaptureRegistersWithProfile(
+    handle: *c.libusb_device_handle,
+    transfer_size: u32,
+    target_bytes: u64,
+    channel_count: u32,
+    profile: CaptureProfile,
+    timeout_ms: u32,
+) !void {
     if (transfer_size == 0) return error.InvalidTransferSize;
 
     const reg_timeout_ms: u32 = if (timeout_ms == 0) DEFAULT_REGISTER_TIMEOUT_MS else timeout_ms;
-    const channel_mask = try captureChannelMask(channel_count);
-    const target_total = std.math.add(u64, target_bytes, transfer_size) catch return error.InvalidCaptureTarget;
-    const target_low: u32 = @truncate(target_total);
-    const target_high: u32 = @truncate(target_total >> 32);
-    const pwm_max: u32 = DEFAULT_PWM_CLOCK_HZ / DEFAULT_THRESHOLD_PWM_FREQ_HZ;
-    const threshold_vth: u32 = @intFromFloat((DEFAULT_VTH_VOLTS * 0.5 / DEFAULT_VTH_SCALE) * @as(f64, @floatFromInt(pwm_max)));
 
-    // Match PXView's capture bootstrap order for PX-Logic streaming.
+    // Keep PXView start order: reset block pointer then clear data endpoints.
     try writeRegister(handle, REG_BLOCK_START, 0, reg_timeout_ms);
     try clearHalt(handle, BULK_EP_DATA_IN);
     try clearHalt(handle, 0x04);
     try clearHalt(handle, 0x84);
-    try writeRegister(handle, REG_THRESHOLD_PWM_MAX, pwm_max, reg_timeout_ms);
-    try writeRegister(handle, REG_THRESHOLD_VALUE, threshold_vth, reg_timeout_ms);
-    try writeRegister(handle, REG_STREAM_CHANNEL_ENABLE, 0, reg_timeout_ms);
-    try writeRegister(handle, REG_STREAM_CONTROL, STREAM_ENABLE_FLAGS, reg_timeout_ms);
-    try writeRegister(handle, REG_STREAM_CONTROL, STREAM_ENABLE_PULSE_FLAGS, reg_timeout_ms);
-    try writeRegister(handle, REG_STREAM_CONTROL, STREAM_ENABLE_FLAGS, reg_timeout_ms);
-    try writeRegister(handle, REG_STREAM_START, STREAM_STOP_FLAGS, reg_timeout_ms);
-    try writeRegister(handle, REG_STREAM_TRANSFER_SIZE, transfer_size, reg_timeout_ms);
-    try writeRegister(handle, REG_STREAM_DMA_SIZE, transfer_size, reg_timeout_ms);
-    try writeRegister(handle, REG_CAPTURE_BYTES_LOW, target_low, reg_timeout_ms);
-    try writeRegister(handle, REG_CAPTURE_BYTES_HIGH, target_high, reg_timeout_ms);
-    try writeRegister(handle, REG_EXT_TRIGGER_MODE, DEFAULT_EXT_TRIGGER_MODE, reg_timeout_ms);
-    try writeRegister(handle, REG_TRIGGER_OUT_ENABLE, DEFAULT_TRIGGER_OUT_ENABLE, reg_timeout_ms);
-    try writeRegister(handle, REG_GPIO_MODE, DEFAULT_GPIO_MODE, reg_timeout_ms);
-    try writeRegister(handle, REG_GPIO_DIV, DEFAULT_GPIO_DIV, reg_timeout_ms);
-    try writeRegister(handle, REG_CAPTURE_CHANNEL_COUNT, channel_count, reg_timeout_ms);
-    try writeRegister(handle, REG_CAPTURE_TRIGGER_POS, DEFAULT_CAPTURE_TRIGGER_POS, reg_timeout_ms);
-    try writeRegister(handle, REG_BLOCK_START, 0, reg_timeout_ms);
-    try writeRegister(handle, REG_STREAM_CHANNEL_ENABLE, channel_mask, reg_timeout_ms);
-    try writeRegister(handle, REG_STREAM_CONTROL, STREAM_RUN_FLAGS, reg_timeout_ms);
-    try writeRegister(handle, REG_TRIGGER_ZERO, DEFAULT_TRIGGER_MASK, reg_timeout_ms);
-    try writeRegister(handle, REG_TRIGGER_ONE, DEFAULT_TRIGGER_MASK, reg_timeout_ms);
-    try writeRegister(handle, REG_TRIGGER_RISE, DEFAULT_TRIGGER_MASK, reg_timeout_ms);
-    try writeRegister(handle, REG_TRIGGER_FALL, DEFAULT_TRIGGER_MASK, reg_timeout_ms);
-    try writeRegister(handle, REG_STREAM_START, STREAM_START_FLAGS, reg_timeout_ms);
+
+    var script = try buildCaptureRegisterScript(transfer_size, target_bytes, channel_count, profile);
+    try applyCaptureRegisterScript(handle, &script, reg_timeout_ms);
+}
+
+pub fn buildCaptureRegisterScript(
+    transfer_size: u32,
+    target_bytes: u64,
+    channel_count: u32,
+    profile: CaptureProfile,
+) !CaptureRegisterScript {
+    if (transfer_size == 0) return error.InvalidTransferSize;
+
+    const channel_mask = try captureChannelMask(channel_count);
+    const target_total = std.math.add(u64, target_bytes, transfer_size) catch return error.InvalidCaptureTarget;
+    const target_low: u32 = @truncate(target_total);
+    const target_high: u32 = @truncate(target_total >> 32);
+    const stream_mask = streamMaskForMode(profile.op_mode);
+    const stream_enable_flags = STREAM_ENABLE_FLAGS_BASE | stream_mask;
+    const stream_enable_pulse_flags = stream_enable_flags | STREAM_ENABLE_PULSE_FLAG;
+    const stream_run_flags = stream_mask | (@as(u32, profile.filter) << STREAM_FILTER_SHIFT);
+    const gpio_timing = gpioTimingForSamplerate(profile.samplerate_hz);
+    const gpio_mode = gpio_timing.mode | (@as(u32, profile.clock_edge) << STREAM_FILTER_SHIFT);
+    const pwm_max: u32 = DEFAULT_PWM_CLOCK_HZ / DEFAULT_THRESHOLD_PWM_FREQ_HZ;
+    const threshold_vth: u32 = @intFromFloat((profile.vth_volts * 0.5 / DEFAULT_VTH_SCALE) * @as(f64, @floatFromInt(pwm_max)));
+
+    var script = CaptureRegisterScript.init();
+    try script.append(REG_THRESHOLD_PWM_MAX, pwm_max);
+    try script.append(REG_THRESHOLD_VALUE, threshold_vth);
+    try script.append(REG_STREAM_CHANNEL_ENABLE, 0);
+    try script.append(REG_STREAM_CONTROL, stream_enable_flags);
+    try script.append(REG_STREAM_CONTROL, stream_enable_pulse_flags);
+    try script.append(REG_STREAM_CONTROL, stream_enable_flags);
+    try script.append(REG_STREAM_START, STREAM_STOP_FLAGS);
+    try script.append(REG_STREAM_TRANSFER_SIZE, transfer_size);
+    try script.append(REG_STREAM_DMA_SIZE, transfer_size);
+    try script.append(REG_CAPTURE_BYTES_LOW, target_low);
+    try script.append(REG_CAPTURE_BYTES_HIGH, target_high);
+    try script.append(REG_EXT_TRIGGER_MODE, profile.ext_trigger_mode);
+    try script.append(REG_TRIGGER_OUT_ENABLE, profile.trigger_out_enable);
+    try script.append(REG_GPIO_MODE, gpio_mode);
+    try script.append(REG_GPIO_DIV, gpio_timing.div);
+    try script.append(REG_CAPTURE_CHANNEL_COUNT, channel_count);
+    try script.append(REG_CAPTURE_TRIGGER_POS, profile.trigger_pos);
+    try script.append(REG_BLOCK_START, 0);
+    try script.append(REG_STREAM_CHANNEL_ENABLE, channel_mask);
+    try script.append(REG_STREAM_CONTROL, stream_run_flags);
+    try script.append(REG_TRIGGER_ZERO, profile.trigger_zero);
+    try script.append(REG_TRIGGER_ONE, profile.trigger_one);
+    try script.append(REG_TRIGGER_RISE, profile.trigger_rise);
+    try script.append(REG_TRIGGER_FALL, profile.trigger_fall);
+    try script.append(REG_STREAM_START, STREAM_START_FLAGS);
+    return script;
+}
+
+fn applyCaptureRegisterScript(
+    handle: *c.libusb_device_handle,
+    script: *const CaptureRegisterScript,
+    timeout_ms: u32,
+) !void {
+    for (script.slice()) |write_cmd| {
+        try writeRegister(handle, write_cmd.addr, write_cmd.value, timeout_ms);
+    }
+}
+
+pub fn streamMaskForMode(op_mode: OperationMode) u32 {
+    return switch (op_mode) {
+        .buffer => 0,
+        .stream, .loop => STREAM_MODE_BIT,
+    };
+}
+
+pub fn gpioTimingForSamplerate(samplerate_hz: u64) GpioTiming {
+    return switch (samplerate_hz) {
+        1_000_000_000 => .{ .mode = 0, .div = 0 },
+        500_000_000 => .{ .mode = 1, .div = 0 },
+        250_000_000 => .{ .mode = 2, .div = 0 },
+        125_000_000 => .{ .mode = 3, .div = 0 },
+        800_000_000 => .{ .mode = 4, .div = 0 },
+        400_000_000 => .{ .mode = 5, .div = 0 },
+        200_000_000 => .{ .mode = 6, .div = 0 },
+        100_000_000 => .{ .mode = 7, .div = 0 },
+        else => .{
+            .mode = 7,
+            .div = switch (samplerate_hz) {
+                50_000_000 => 1,
+                25_000_000 => 3,
+                20_000_000 => 4,
+                10_000_000 => 9,
+                5_000_000 => 19,
+                4_000_000 => 24,
+                2_000_000 => 49,
+                1_000_000 => 99,
+                500_000 => 199,
+                400_000 => 249,
+                200_000 => 499,
+                100_000 => 999,
+                50_000 => 1_999,
+                40_000 => 2_499,
+                20_000 => 4_999,
+                10_000 => 9_999,
+                5_000 => 19_999,
+                2_000 => 49_999,
+                else => 0,
+            },
+        },
+    };
 }
 
 pub fn captureChannelMask(channel_count: u32) !u32 {
@@ -392,4 +539,67 @@ test "captureChannelMask supports 16 and 32 channels" {
     try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), try captureChannelMask(32));
     try std.testing.expectError(error.InvalidChannelCount, captureChannelMask(0));
     try std.testing.expectError(error.InvalidChannelCount, captureChannelMask(33));
+}
+
+fn expectScriptWrite(script: *const CaptureRegisterScript, index: usize, addr: u32, value: u32) !void {
+    try std.testing.expect(index < script.len);
+    try std.testing.expectEqual(addr, script.writes[index].addr);
+    try std.testing.expectEqual(value, script.writes[index].value);
+}
+
+test "streamMaskForMode matches pxview op mode rules" {
+    try std.testing.expectEqual(@as(u32, 0), streamMaskForMode(.buffer));
+    try std.testing.expectEqual(STREAM_MODE_BIT, streamMaskForMode(.stream));
+    try std.testing.expectEqual(STREAM_MODE_BIT, streamMaskForMode(.loop));
+}
+
+test "gpioTimingForSamplerate matches pxview table" {
+    try std.testing.expectEqualDeep(GpioTiming{ .mode = 2, .div = 0 }, gpioTimingForSamplerate(250_000_000));
+    try std.testing.expectEqualDeep(GpioTiming{ .mode = 7, .div = 9 }, gpioTimingForSamplerate(10_000_000));
+    try std.testing.expectEqualDeep(GpioTiming{ .mode = 7, .div = 49_999 }, gpioTimingForSamplerate(2_000));
+    try std.testing.expectEqualDeep(GpioTiming{ .mode = 7, .div = 0 }, gpioTimingForSamplerate(12_345));
+}
+
+test "buildCaptureRegisterScript buffer mode produces pxview-compatible sequence" {
+    var script = try buildCaptureRegisterScript(4096, 65_536, 16, .{});
+
+    try std.testing.expectEqual(@as(usize, 25), script.len);
+    try expectScriptWrite(&script, 0, REG_THRESHOLD_PWM_MAX, 12_000);
+    try expectScriptWrite(&script, 1, REG_THRESHOLD_VALUE, 3_599);
+    try expectScriptWrite(&script, 3, REG_STREAM_CONTROL, 5);
+    try expectScriptWrite(&script, 4, REG_STREAM_CONTROL, 21);
+    try expectScriptWrite(&script, 5, REG_STREAM_CONTROL, 5);
+    try expectScriptWrite(&script, 6, REG_STREAM_START, STREAM_STOP_FLAGS);
+    try expectScriptWrite(&script, 9, REG_CAPTURE_BYTES_LOW, 69_632);
+    try expectScriptWrite(&script, 10, REG_CAPTURE_BYTES_HIGH, 0);
+    try expectScriptWrite(&script, 13, REG_GPIO_MODE, 2);
+    try expectScriptWrite(&script, 14, REG_GPIO_DIV, 0);
+    try expectScriptWrite(&script, 18, REG_STREAM_CHANNEL_ENABLE, 0x0000_FFFF);
+    try expectScriptWrite(&script, 19, REG_STREAM_CONTROL, 0);
+    try expectScriptWrite(&script, 24, REG_STREAM_START, STREAM_START_FLAGS);
+}
+
+test "buildCaptureRegisterScript stream mode applies stream mask and filter bits" {
+    var script = try buildCaptureRegisterScript(8192, 1_000_000, 16, .{
+        .op_mode = .stream,
+        .samplerate_hz = 10_000_000,
+        .filter = 2,
+        .clock_edge = 1,
+        .trigger_zero = 0xAAAA,
+        .trigger_one = 0xBBBB,
+        .trigger_rise = 0xCCCC,
+        .trigger_fall = 0xDDDD,
+    });
+
+    try std.testing.expectEqual(@as(usize, 25), script.len);
+    try expectScriptWrite(&script, 3, REG_STREAM_CONTROL, 7);
+    try expectScriptWrite(&script, 4, REG_STREAM_CONTROL, 23);
+    try expectScriptWrite(&script, 5, REG_STREAM_CONTROL, 7);
+    try expectScriptWrite(&script, 13, REG_GPIO_MODE, 15);
+    try expectScriptWrite(&script, 14, REG_GPIO_DIV, 9);
+    try expectScriptWrite(&script, 19, REG_STREAM_CONTROL, 18);
+    try expectScriptWrite(&script, 20, REG_TRIGGER_ZERO, 0xAAAA);
+    try expectScriptWrite(&script, 21, REG_TRIGGER_ONE, 0xBBBB);
+    try expectScriptWrite(&script, 22, REG_TRIGGER_RISE, 0xCCCC);
+    try expectScriptWrite(&script, 23, REG_TRIGGER_FALL, 0xDDDD);
 }

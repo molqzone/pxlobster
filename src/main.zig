@@ -40,6 +40,8 @@ const CaptureCommand = struct {
     output_path: []const u8,
     sample_bytes: usize = default_capture_samples_bytes,
     decode_cross: bool = false,
+    op_mode: usb.OperationMode = .buffer,
+    samplerate_hz: u64 = usb.DEFAULT_CAPTURE_SAMPLERATE_HZ,
 };
 
 const Command = union(enum) {
@@ -63,6 +65,10 @@ fn parseArgs() !Command {
     var sample_bytes: usize = default_capture_samples_bytes;
     var samples_set = false;
     var decode_cross = false;
+    var op_mode: usb.OperationMode = .buffer;
+    var op_mode_set = false;
+    var samplerate_hz: u64 = usb.DEFAULT_CAPTURE_SAMPLERATE_HZ;
+    var samplerate_set = false;
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--scan")) {
@@ -92,6 +98,19 @@ fn parseArgs() !Command {
             decode_cross = true;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--op-mode")) {
+            const value = args.next() orelse return error.InvalidArgument;
+            op_mode = parseOpMode(value) orelse return error.InvalidArgument;
+            op_mode_set = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--samplerate")) {
+            const value = args.next() orelse return error.InvalidArgument;
+            samplerate_hz = std.fmt.parseInt(u64, value, 10) catch return error.InvalidArgument;
+            if (samplerate_hz == 0) return error.InvalidArgument;
+            samplerate_set = true;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             try printUsage(stdout);
             return error.ShowHelp;
@@ -99,7 +118,7 @@ fn parseArgs() !Command {
         return error.InvalidArgument;
     }
 
-    const capture_requested = output_path != null or samples_set or decode_cross;
+    const capture_requested = output_path != null or samples_set or decode_cross or op_mode_set or samplerate_set;
     if (requested_read_only != null and capture_requested) return error.InvalidArgument;
 
     if (requested_read_only) |command| {
@@ -114,6 +133,8 @@ fn parseArgs() !Command {
             .output_path = path,
             .sample_bytes = sample_bytes,
             .decode_cross = decode_cross,
+            .op_mode = op_mode,
+            .samplerate_hz = samplerate_hz,
         } };
     }
 
@@ -125,7 +146,7 @@ fn printUsage(writer: anytype) !void {
         \\Usage:
         \\  pxlobster --scan
         \\  pxlobster --prime-fw
-        \\  pxlobster -o <path> [--samples <bytes>] [--decode-cross]
+        \\  pxlobster -o <path> [--samples <bytes>] [--decode-cross] [--op-mode <buffer|stream|loop>] [--samplerate <hz>]
         \\
         \\Options:
         \\  --scan               Read-only scan for supported PX Logic devices.
@@ -133,6 +154,8 @@ fn printUsage(writer: anytype) !void {
         \\  -o, --output-file    Capture raw samples to output file.
         \\  --samples            Capture bytes target (default: 8388608).
         \\  --decode-cross       Decode PXView LA_CROSS_DATA into packed channel samples.
+        \\  --op-mode            Capture operation mode: buffer | stream | loop (default: buffer).
+        \\  --samplerate         Capture sample rate in Hz (default: 250000000).
         \\  -h, --help           Show this help.
         \\
         \\Notes:
@@ -241,6 +264,10 @@ fn runCapture(cmd: CaptureCommand, stdout: anytype, stderr: anytype) !void {
             .output_path = cmd.output_path,
             .sample_bytes = cmd.sample_bytes,
             .decode_cross = cmd.decode_cross,
+            .capture_profile = .{
+                .op_mode = cmd.op_mode,
+                .samplerate_hz = cmd.samplerate_hz,
+            },
         }) catch |err| {
             try stderr.print("capture failed: {s}\n", .{@errorName(err)});
             std.process.exit(1);
@@ -251,6 +278,13 @@ fn runCapture(cmd: CaptureCommand, stdout: anytype, stderr: anytype) !void {
             .{ cmd.output_path, stats.bytes_out, stats.bytes_in, stats.dropped, stats.elapsed_ms },
         );
     }
+}
+
+fn parseOpMode(value: []const u8) ?usb.OperationMode {
+    if (std.mem.eql(u8, value, "buffer")) return .buffer;
+    if (std.mem.eql(u8, value, "stream")) return .stream;
+    if (std.mem.eql(u8, value, "loop")) return .loop;
+    return null;
 }
 
 fn detectTag(dev: *c.libusb_device, vid: u16, pid: u16) ?[]const u8 {
@@ -380,4 +414,11 @@ test "modelLabelForIdentity matches PX Logic profiles" {
 test "modelLabelForIdentity returns null for unknown IDs" {
     try std.testing.expect(modelLabelForIdentity(0x046D, 0xC52B, c.LIBUSB_SPEED_HIGH, .unavailable) == null);
     try std.testing.expect(modelLabelForIdentity(0x0000, 0x0000, c.LIBUSB_SPEED_HIGH, .unavailable) == null);
+}
+
+test "parseOpMode accepts supported values" {
+    try std.testing.expectEqual(usb.OperationMode.buffer, parseOpMode("buffer").?);
+    try std.testing.expectEqual(usb.OperationMode.stream, parseOpMode("stream").?);
+    try std.testing.expectEqual(usb.OperationMode.loop, parseOpMode("loop").?);
+    try std.testing.expect(parseOpMode("invalid") == null);
 }
