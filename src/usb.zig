@@ -423,7 +423,7 @@ pub fn buildCaptureRegisterScript(
     const stream_enable_flags = STREAM_ENABLE_FLAGS_BASE | stream_mask;
     const stream_enable_pulse_flags = stream_enable_flags | STREAM_ENABLE_PULSE_FLAG;
     const stream_run_flags = stream_mask | (@as(u32, profile.filter) << STREAM_FILTER_SHIFT);
-    const gpio_timing = gpioTimingForSamplerate(profile.samplerate_hz);
+    const gpio_timing = try gpioTimingForSamplerate(profile.samplerate_hz);
     const gpio_mode = gpio_timing.mode | (@as(u32, profile.clock_edge) << STREAM_FILTER_SHIFT);
     const pwm_max: u32 = DEFAULT_PWM_CLOCK_HZ / DEFAULT_THRESHOLD_PWM_FREQ_HZ;
     const threshold_vth: u32 = @intFromFloat((profile.vth_volts * 0.5 / DEFAULT_VTH_SCALE) * @as(f64, @floatFromInt(pwm_max)));
@@ -474,7 +474,12 @@ pub fn streamMaskForMode(op_mode: OperationMode) u32 {
     };
 }
 
-pub fn gpioTimingForSamplerate(samplerate_hz: u64) GpioTiming {
+pub fn isSupportedSamplerate(samplerate_hz: u64) bool {
+    _ = gpioTimingForSamplerate(samplerate_hz) catch return false;
+    return true;
+}
+
+pub fn gpioTimingForSamplerate(samplerate_hz: u64) !GpioTiming {
     return switch (samplerate_hz) {
         1_000_000_000 => .{ .mode = 0, .div = 0 },
         500_000_000 => .{ .mode = 1, .div = 0 },
@@ -505,7 +510,7 @@ pub fn gpioTimingForSamplerate(samplerate_hz: u64) GpioTiming {
                 10_000 => 9_999,
                 5_000 => 19_999,
                 2_000 => 49_999,
-                else => 0,
+                else => return error.InvalidSamplerate,
             },
         },
     };
@@ -554,10 +559,17 @@ test "streamMaskForMode matches pxview op mode rules" {
 }
 
 test "gpioTimingForSamplerate matches pxview table" {
-    try std.testing.expectEqualDeep(GpioTiming{ .mode = 2, .div = 0 }, gpioTimingForSamplerate(250_000_000));
-    try std.testing.expectEqualDeep(GpioTiming{ .mode = 7, .div = 9 }, gpioTimingForSamplerate(10_000_000));
-    try std.testing.expectEqualDeep(GpioTiming{ .mode = 7, .div = 49_999 }, gpioTimingForSamplerate(2_000));
-    try std.testing.expectEqualDeep(GpioTiming{ .mode = 7, .div = 0 }, gpioTimingForSamplerate(12_345));
+    try std.testing.expectEqualDeep(GpioTiming{ .mode = 2, .div = 0 }, try gpioTimingForSamplerate(250_000_000));
+    try std.testing.expectEqualDeep(GpioTiming{ .mode = 7, .div = 9 }, try gpioTimingForSamplerate(10_000_000));
+    try std.testing.expectEqualDeep(GpioTiming{ .mode = 7, .div = 49_999 }, try gpioTimingForSamplerate(2_000));
+    try std.testing.expectError(error.InvalidSamplerate, gpioTimingForSamplerate(12_345));
+}
+
+test "isSupportedSamplerate accepts only pxview rates" {
+    try std.testing.expect(isSupportedSamplerate(250_000_000));
+    try std.testing.expect(isSupportedSamplerate(10_000_000));
+    try std.testing.expect(!isSupportedSamplerate(0));
+    try std.testing.expect(!isSupportedSamplerate(12_345));
 }
 
 test "buildCaptureRegisterScript buffer mode produces pxview-compatible sequence" {

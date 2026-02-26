@@ -52,6 +52,13 @@ const OpenedCaptureDevice = struct {
     pid: u16,
 };
 
+const prime_settle_delay_ms: u64 = 100;
+
+const CandidateSlot = struct {
+    snapshot: usb.DeviceSnapshot,
+    dev: ?*c.libusb_device = null,
+};
+
 const LoopSignalGuard = struct {
     active: bool = false,
     previous: std.posix.Sigaction = undefined,
@@ -376,24 +383,96 @@ fn drainTransfers(ctx: *c.libusb_context, slots: []TransferSlot, shared: *Shared
 }
 
 fn openFirstSupportedDevice(ctx: *c.libusb_context) !OpenedCaptureDevice {
-    var saw_open_failure = false;
-    for (device.supported_pxlogic_ids) |id| {
-        const handle_opt = usb.openFirstDeviceByVidPid(ctx, id.vid, id.pid) catch |err| switch (err) {
-            error.LibusbOpenFailed => {
-                saw_open_failure = true;
-                continue;
-            },
-            else => return err,
-        };
-        if (handle_opt) |handle| {
-            return .{
-                .handle = handle,
-                .vid = id.vid,
-                .pid = id.pid,
-            };
-        }
+    var device_list: [*c]?*c.libusb_device = undefined;
+    const count = c.libusb_get_device_list(ctx, &device_list);
+    if (count < 0) return error.LibusbGetDeviceListFailed;
+    defer c.libusb_free_device_list(device_list, 1);
+
+    var candidates: std.ArrayList(CandidateSlot) = .empty;
+    defer candidates.deinit(std.heap.page_allocator);
+
+    const count_usize: usize = @intCast(count);
+    const device_slice = @as([*]?*c.libusb_device, @ptrCast(device_list))[0..count_usize];
+    for (device_slice) |dev_opt| {
+        if (dev_opt == null) continue;
+        const snapshot = usb.snapshotFromDevice(dev_opt.?) orelse continue;
+        try candidates.append(std.heap.page_allocator, .{
+            .snapshot = snapshot,
+            .dev = dev_opt.?,
+        });
     }
 
+    var saw_open_failure = false;
+    var saw_prime_busy = false;
+    var saw_prime_failed = false;
+    var opened: ?OpenedCaptureDevice = null;
+
+    const Visitor = struct {
+        candidates: []const CandidateSlot,
+        saw_open_failure: *bool,
+        saw_prime_busy: *bool,
+        saw_prime_failed: *bool,
+        opened: *?OpenedCaptureDevice,
+
+        fn call(self: @This(), idx: usize) !bool {
+            const candidate = self.candidates[idx];
+            const dev_ptr = candidate.dev orelse return false;
+
+            switch (device.preparePxLogicDevice(dev_ptr, .{})) {
+                .ready => {},
+                .busy => {
+                    self.saw_prime_busy.* = true;
+                    return false;
+                },
+                .failed => {
+                    self.saw_prime_failed.* = true;
+                    return false;
+                },
+            }
+
+            std.Thread.sleep(prime_settle_delay_ms * std.time.ns_per_ms);
+            const handle = usb.openDevice(dev_ptr) catch {
+                self.saw_open_failure.* = true;
+                return false;
+            };
+
+            self.opened.* = .{
+                .handle = handle,
+                .vid = candidate.snapshot.vid,
+                .pid = candidate.snapshot.pid,
+            };
+            return true;
+        }
+    };
+    const visitor = Visitor{
+        .candidates = candidates.items,
+        .saw_open_failure = &saw_open_failure,
+        .saw_prime_busy = &saw_prime_busy,
+        .saw_prime_failed = &saw_prime_failed,
+        .opened = &opened,
+    };
+    try visitCandidateIndexesByPriority(candidates.items, visitor);
+
+    if (opened) |device_handle| return device_handle;
+    return openSelectionFailure(saw_open_failure, saw_prime_busy, saw_prime_failed);
+}
+
+fn visitCandidateIndexesByPriority(candidates: []const CandidateSlot, visitor: anytype) !void {
+    for (device.supported_pxlogic_ids) |id| {
+        for (candidates, 0..) |candidate, idx| {
+            if (candidate.snapshot.vid != id.vid or candidate.snapshot.pid != id.pid) continue;
+            if (try visitor.call(idx)) return;
+        }
+    }
+}
+
+fn openSelectionFailure(
+    saw_open_failure: bool,
+    saw_prime_busy: bool,
+    saw_prime_failed: bool,
+) error{ PxLogicPrimeFailed, PxLogicPrimeBusy, LibusbOpenFailed, NoSupportedDevicesFound } {
+    if (saw_prime_failed) return error.PxLogicPrimeFailed;
+    if (saw_prime_busy) return error.PxLogicPrimeBusy;
     if (saw_open_failure) return error.LibusbOpenFailed;
     return error.NoSupportedDevicesFound;
 }
@@ -438,6 +517,69 @@ test "captureRegisterTargetBytes uses max range for loop mode" {
     try std.testing.expectEqual(@as(u64, sample_bytes), captureRegisterTargetBytes(sample_bytes, transfer_size, .buffer));
     try std.testing.expectEqual(@as(u64, sample_bytes), captureRegisterTargetBytes(sample_bytes, transfer_size, .stream));
     try std.testing.expectEqual(std.math.maxInt(u64) - @as(u64, transfer_size), captureRegisterTargetBytes(sample_bytes, transfer_size, .loop));
+}
+
+test "visitCandidateIndexesByPriority follows supported ID order" {
+    const candidates = [_]CandidateSlot{
+        .{ .snapshot = .{ .vid = device.pxlogic_legacy_id.vid, .pid = device.pxlogic_legacy_id.pid, .speed = 0, .bus = 1, .address = 1 } },
+        .{ .snapshot = .{ .vid = device.pxlogic_wch_id.vid, .pid = device.pxlogic_wch_id.pid, .speed = 0, .bus = 1, .address = 2 } },
+        .{ .snapshot = .{ .vid = device.pxlogic_legacy_id.vid, .pid = device.pxlogic_legacy_id.pid, .speed = 0, .bus = 1, .address = 3 } },
+    };
+
+    var seen: [3]usize = undefined;
+    var seen_len: usize = 0;
+
+    const Visitor = struct {
+        seen: *[3]usize,
+        seen_len: *usize,
+
+        fn call(self: @This(), idx: usize) !bool {
+            self.seen[self.seen_len.*] = idx;
+            self.seen_len.* += 1;
+            return false;
+        }
+    };
+    const visitor = Visitor{ .seen = &seen, .seen_len = &seen_len };
+    try visitCandidateIndexesByPriority(candidates[0..], visitor);
+
+    try std.testing.expectEqual(@as(usize, 3), seen_len);
+    try std.testing.expectEqual(@as(usize, 1), seen[0]);
+    try std.testing.expectEqual(@as(usize, 0), seen[1]);
+    try std.testing.expectEqual(@as(usize, 2), seen[2]);
+}
+
+test "visitCandidateIndexesByPriority stops when visitor returns true" {
+    const candidates = [_]CandidateSlot{
+        .{ .snapshot = .{ .vid = device.pxlogic_legacy_id.vid, .pid = device.pxlogic_legacy_id.pid, .speed = 0, .bus = 1, .address = 1 } },
+        .{ .snapshot = .{ .vid = device.pxlogic_wch_id.vid, .pid = device.pxlogic_wch_id.pid, .speed = 0, .bus = 1, .address = 2 } },
+        .{ .snapshot = .{ .vid = device.pxlogic_legacy_id.vid, .pid = device.pxlogic_legacy_id.pid, .speed = 0, .bus = 1, .address = 3 } },
+    };
+
+    var first_seen: ?usize = null;
+    var calls: usize = 0;
+
+    const Visitor = struct {
+        first_seen: *?usize,
+        calls: *usize,
+
+        fn call(self: @This(), idx: usize) !bool {
+            self.calls.* += 1;
+            if (self.first_seen.* == null) self.first_seen.* = idx;
+            return true;
+        }
+    };
+    const visitor = Visitor{ .first_seen = &first_seen, .calls = &calls };
+    try visitCandidateIndexesByPriority(candidates[0..], visitor);
+
+    try std.testing.expectEqual(@as(usize, 1), calls);
+    try std.testing.expectEqual(@as(usize, 1), first_seen.?);
+}
+
+test "openSelectionFailure prioritizes prime errors over open failures" {
+    try std.testing.expectError(error.PxLogicPrimeFailed, openSelectionFailure(true, true, true));
+    try std.testing.expectError(error.PxLogicPrimeBusy, openSelectionFailure(true, true, false));
+    try std.testing.expectError(error.LibusbOpenFailed, openSelectionFailure(true, false, false));
+    try std.testing.expectError(error.NoSupportedDevicesFound, openSelectionFailure(false, false, false));
 }
 
 test "pushTransferPayload tracks only bytes accepted by ringbuffer" {

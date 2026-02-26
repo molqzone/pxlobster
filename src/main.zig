@@ -106,8 +106,7 @@ fn parseArgs() !Command {
         }
         if (std.mem.eql(u8, arg, "--samplerate")) {
             const value = args.next() orelse return error.InvalidArgument;
-            samplerate_hz = std.fmt.parseInt(u64, value, 10) catch return error.InvalidArgument;
-            if (samplerate_hz == 0) return error.InvalidArgument;
+            samplerate_hz = parseSamplerate(value) orelse return error.InvalidArgument;
             samplerate_set = true;
             continue;
         }
@@ -155,7 +154,7 @@ fn printUsage(writer: anytype) !void {
         \\  --samples            Capture bytes target for buffer/stream (default: 8388608).
         \\  --decode-cross       Decode PXView LA_CROSS_DATA into packed channel samples.
         \\  --op-mode            Capture operation mode: buffer | stream | loop (default: buffer).
-        \\  --samplerate         Capture sample rate in Hz (default: 250000000).
+        \\  --samplerate         Capture sample rate in Hz (must be a PXView-supported discrete value).
         \\  -h, --help           Show this help.
         \\
         \\Notes:
@@ -286,6 +285,12 @@ fn parseOpMode(value: []const u8) ?usb.OperationMode {
     if (std.mem.eql(u8, value, "stream")) return .stream;
     if (std.mem.eql(u8, value, "loop")) return .loop;
     return null;
+}
+
+fn parseSamplerate(value: []const u8) ?u64 {
+    const samplerate = std.fmt.parseInt(u64, value, 10) catch return null;
+    if (!usb.isSupportedSamplerate(samplerate)) return null;
+    return samplerate;
 }
 
 fn detectTag(dev: *c.libusb_device, vid: u16, pid: u16) ?[]const u8 {
@@ -422,4 +427,12 @@ test "parseOpMode accepts supported values" {
     try std.testing.expectEqual(usb.OperationMode.stream, parseOpMode("stream").?);
     try std.testing.expectEqual(usb.OperationMode.loop, parseOpMode("loop").?);
     try std.testing.expect(parseOpMode("invalid") == null);
+}
+
+test "parseSamplerate accepts only supported discrete values" {
+    try std.testing.expectEqual(@as(u64, 250_000_000), parseSamplerate("250000000").?);
+    try std.testing.expectEqual(@as(u64, 10_000_000), parseSamplerate("10000000").?);
+    try std.testing.expect(parseSamplerate("123456789") == null);
+    try std.testing.expect(parseSamplerate("0") == null);
+    try std.testing.expect(parseSamplerate("abc") == null);
 }
