@@ -152,7 +152,7 @@ fn printUsage(writer: anytype) !void {
         \\  --scan               Read-only scan for supported PX Logic devices.
         \\  --prime-fw           Inject firmware to detected PX Logic devices.
         \\  -o, --output-file    Capture raw samples to output file.
-        \\  --samples            Capture bytes target (default: 8388608).
+        \\  --samples            Capture bytes target for buffer/stream (default: 8388608).
         \\  --decode-cross       Decode PXView LA_CROSS_DATA into packed channel samples.
         \\  --op-mode            Capture operation mode: buffer | stream | loop (default: buffer).
         \\  --samplerate         Capture sample rate in Hz (default: 250000000).
@@ -160,6 +160,7 @@ fn printUsage(writer: anytype) !void {
         \\
         \\Notes:
         \\  --scan, --prime-fw, and capture mode are mutually exclusive.
+        \\  loop mode runs continuously until Ctrl+C.
         \\
     );
 }

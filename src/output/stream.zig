@@ -9,6 +9,7 @@ pub const RawWriterContext = struct {
     ring: *ringbuffer.RingBuffer,
     file: std.fs.File,
     target_bytes: usize,
+    continuous: bool = false,
     decode_cross: bool = false,
     channel_count: u32 = 16,
     producer_done: *std.atomic.Value(bool),
@@ -30,9 +31,13 @@ fn runPassthroughWriter(ctx: *RawWriterContext) void {
     var scratch: [writer_chunk_bytes]u8 = undefined;
     var written: usize = 0;
 
-    while (written < ctx.target_bytes) {
-        const remaining = ctx.target_bytes - written;
-        const want = @min(remaining, scratch.len);
+    while (ctx.continuous or written < ctx.target_bytes) {
+        const want = if (ctx.continuous)
+            scratch.len
+        else blk: {
+            const remaining = ctx.target_bytes - written;
+            break :blk @min(remaining, scratch.len);
+        };
         const got = ctx.ring.pop(scratch[0..want]);
         if (got == 0) {
             if (ctx.producer_done.load(.acquire)) break;
@@ -51,7 +56,7 @@ fn runPassthroughWriter(ctx: *RawWriterContext) void {
     }
 
     ctx.bytes_written.store(@intCast(written), .release);
-    if (written >= ctx.target_bytes) {
+    if (!ctx.continuous and written >= ctx.target_bytes) {
         ctx.stop_requested.store(true, .release);
     }
 
@@ -68,7 +73,7 @@ fn runDecodedCrossWriter(ctx: *RawWriterContext) void {
         return;
     };
 
-    if (ctx.target_bytes % stripe_bytes != 0) {
+    if (!ctx.continuous and ctx.target_bytes % stripe_bytes != 0) {
         ctx.failed.store(true, .release);
         ctx.stop_requested.store(true, .release);
         return;
@@ -81,9 +86,13 @@ fn runDecodedCrossWriter(ctx: *RawWriterContext) void {
     var carry_len: usize = 0;
     var written: usize = 0;
 
-    while (written < ctx.target_bytes) {
-        const remaining = ctx.target_bytes - written;
-        const want = @min(remaining, scratch.len);
+    while (ctx.continuous or written < ctx.target_bytes) {
+        const want = if (ctx.continuous)
+            scratch.len
+        else blk: {
+            const remaining = ctx.target_bytes - written;
+            break :blk @min(remaining, scratch.len);
+        };
         const got = ctx.ring.pop(scratch[0..want]);
         if (got == 0) {
             if (ctx.producer_done.load(.acquire)) break;
@@ -120,13 +129,13 @@ fn runDecodedCrossWriter(ctx: *RawWriterContext) void {
         }
     }
 
-    if (!ctx.failed.load(.acquire) and carry_len != 0) {
+    if (!ctx.failed.load(.acquire) and !ctx.continuous and carry_len != 0) {
         ctx.failed.store(true, .release);
         ctx.stop_requested.store(true, .release);
     }
 
     ctx.bytes_written.store(@intCast(written), .release);
-    if (written >= ctx.target_bytes) {
+    if (!ctx.continuous and written >= ctx.target_bytes) {
         ctx.stop_requested.store(true, .release);
     }
 
@@ -213,6 +222,41 @@ fn readLeU32(src: []const u8) u32 {
         (@as(u32, src[1]) << 8) |
         (@as(u32, src[2]) << 16) |
         (@as(u32, src[3]) << 24);
+}
+
+test "runRawWriter continuous mode ignores target_bytes limit" {
+    var rb = try ringbuffer.RingBuffer.init(std.testing.allocator, 32);
+    defer rb.deinit();
+
+    const payload = [_]u8{ 0x10, 0x20, 0x30, 0x40, 0x50 };
+    _ = rb.push(payload[0..]);
+
+    var producer_done = std.atomic.Value(bool).init(true);
+    var stop_requested = std.atomic.Value(bool).init(false);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file = try tmp.dir.createFile("loop.bin", .{ .read = true });
+    defer file.close();
+
+    var writer_ctx = RawWriterContext{
+        .ring = &rb,
+        .file = file,
+        .target_bytes = 1,
+        .continuous = true,
+        .producer_done = &producer_done,
+        .stop_requested = &stop_requested,
+    };
+    runRawWriter(&writer_ctx);
+
+    try std.testing.expect(!writer_ctx.failed.load(.acquire));
+    try std.testing.expectEqual(@as(u64, payload.len), writer_ctx.bytes_written.load(.acquire));
+
+    try file.seekTo(0);
+    var written: [payload.len]u8 = undefined;
+    const read_len = try file.readAll(written[0..]);
+    try std.testing.expectEqual(payload.len, read_len);
+    try std.testing.expectEqualSlices(u8, payload[0..], written[0..]);
 }
 
 test "decodeCrossDataChunk decodes 16-channel stripes into packed samples" {

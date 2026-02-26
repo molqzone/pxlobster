@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const device = @import("device.zig");
 const usb = @import("usb.zig");
 const ringbuffer = @import("ringbuffer.zig");
@@ -7,6 +8,8 @@ const session = @import("output/session.zig");
 
 const c = usb.c;
 const no_failure_status: u32 = std.math.maxInt(u32);
+const supports_posix_sigint = builtin.os.tag != .windows and builtin.os.tag != .wasi;
+var loop_interrupt_requested = std.atomic.Value(bool).init(false);
 
 pub const CaptureOptions = struct {
     output_path: []const u8,
@@ -48,6 +51,47 @@ const OpenedCaptureDevice = struct {
     vid: u16,
     pid: u16,
 };
+
+const LoopSignalGuard = struct {
+    active: bool = false,
+    previous: std.posix.Sigaction = undefined,
+
+    fn install() LoopSignalGuard {
+        if (!supports_posix_sigint) return .{};
+
+        loop_interrupt_requested.store(false, .release);
+        var guard = LoopSignalGuard{ .active = true };
+        const action: std.posix.Sigaction = .{
+            .handler = .{ .handler = loopSigIntHandler },
+            .mask = std.posix.sigemptyset(),
+            .flags = 0,
+        };
+        std.posix.sigaction(std.posix.SIG.INT, &action, &guard.previous);
+        return guard;
+    }
+
+    fn restore(self: *LoopSignalGuard) void {
+        if (!self.active) return;
+        std.posix.sigaction(std.posix.SIG.INT, &self.previous, null);
+        self.active = false;
+    }
+
+    fn interrupted() bool {
+        if (!supports_posix_sigint) return false;
+        return loop_interrupt_requested.load(.acquire);
+    }
+};
+
+fn loopSigIntHandler(_: i32) callconv(.c) void {
+    loop_interrupt_requested.store(true, .release);
+}
+
+fn captureRegisterTargetBytes(sample_bytes: usize, transfer_size: usize, op_mode: usb.OperationMode) u64 {
+    if (op_mode == .loop) {
+        return std.math.maxInt(u64) - @as(u64, @intCast(transfer_size));
+    }
+    return @intCast(sample_bytes);
+}
 
 pub fn runCaptureToFile(
     allocator: std.mem.Allocator,
@@ -93,10 +137,23 @@ pub fn runCaptureToFile(
     const output_file = try std.fs.cwd().createFile(options.output_path, .{ .truncate = true });
     defer output_file.close();
 
+    const loop_mode = options.capture_profile.op_mode == .loop;
+    var loop_signal_guard = LoopSignalGuard{};
+    if (loop_mode) {
+        loop_signal_guard = LoopSignalGuard.install();
+    }
+    defer loop_signal_guard.restore();
+
+    const register_target_bytes = captureRegisterTargetBytes(
+        options.sample_bytes,
+        options.transfer_size,
+        options.capture_profile.op_mode,
+    );
+
     try usb.prepareCaptureRegistersWithProfile(
         handle,
         @intCast(options.transfer_size),
-        @intCast(options.sample_bytes),
+        register_target_bytes,
         capture_channel_count,
         options.capture_profile,
         options.register_timeout_ms,
@@ -144,6 +201,7 @@ pub fn runCaptureToFile(
         .ring = &ring,
         .file = output_file,
         .target_bytes = options.sample_bytes,
+        .continuous = loop_mode,
         .decode_cross = options.decode_cross,
         .channel_count = capture_channel_count,
         .producer_done = &shared.producer_done,
@@ -161,6 +219,10 @@ pub fn runCaptureToFile(
     var trigger_seen = false;
     var cancel_sent = false;
     while (true) {
+        if (loop_mode and LoopSignalGuard.interrupted()) {
+            shared.stop_requested.store(true, .release);
+        }
+
         if (writer_ctx.failed.load(.acquire)) {
             shared.transfer_failed.store(true, .release);
             shared.stop_requested.store(true, .release);
@@ -168,7 +230,7 @@ pub fn runCaptureToFile(
 
         const bytes_out_now = writer_ctx.bytes_written.load(.acquire);
         const bytes_in_now = shared.bytes_in.load(.acquire);
-        if (bytes_out_now >= options.sample_bytes or bytes_in_now >= options.sample_bytes) {
+        if (!loop_mode and (bytes_out_now >= options.sample_bytes or bytes_in_now >= options.sample_bytes)) {
             shared.stop_requested.store(true, .release);
         }
 
@@ -244,7 +306,7 @@ pub fn runCaptureToFile(
     }
 
     const bytes_out = writer_ctx.bytes_written.load(.acquire);
-    if (bytes_out != options.sample_bytes) return error.CaptureIncomplete;
+    if (!loop_mode and bytes_out != options.sample_bytes) return error.CaptureIncomplete;
 
     return .{
         .bytes_in = shared.bytes_in.load(.acquire),
@@ -367,6 +429,15 @@ fn transferStatusName(status: u32) []const u8 {
         c.LIBUSB_TRANSFER_OVERFLOW => "OVERFLOW",
         else => "UNKNOWN",
     };
+}
+
+test "captureRegisterTargetBytes uses max range for loop mode" {
+    const sample_bytes: usize = 4096;
+    const transfer_size: usize = 1024;
+
+    try std.testing.expectEqual(@as(u64, sample_bytes), captureRegisterTargetBytes(sample_bytes, transfer_size, .buffer));
+    try std.testing.expectEqual(@as(u64, sample_bytes), captureRegisterTargetBytes(sample_bytes, transfer_size, .stream));
+    try std.testing.expectEqual(std.math.maxInt(u64) - @as(u64, transfer_size), captureRegisterTargetBytes(sample_bytes, transfer_size, .loop));
 }
 
 test "pushTransferPayload tracks only bytes accepted by ringbuffer" {
