@@ -1,4 +1,5 @@
 const std = @import("std");
+const caps = @import("caps.zig");
 
 pub const c = @import("pxlobster").libusb;
 
@@ -58,7 +59,7 @@ pub const DEFAULT_PWM_CLOCK_HZ: u32 = 120_000_000;
 pub const DEFAULT_THRESHOLD_PWM_FREQ_HZ: u32 = 10_000;
 pub const DEFAULT_VTH_VOLTS: f64 = 2.0;
 pub const DEFAULT_VTH_SCALE: f64 = 3.334;
-pub const DEFAULT_CAPTURE_SAMPLERATE_HZ: u64 = 250_000_000;
+pub const DEFAULT_CAPTURE_SAMPLERATE_HZ: u64 = caps.default_capture_samplerate_hz;
 pub const MAX_CAPTURE_REGISTER_WRITES: usize = 26;
 
 pub const DeviceSnapshot = struct {
@@ -123,10 +124,7 @@ pub const CaptureRegisterScript = struct {
     }
 };
 
-pub const GpioTiming = struct {
-    mode: u32,
-    div: u32,
-};
+pub const GpioTiming = caps.GpioTiming;
 
 pub fn listSnapshots(allocator: std.mem.Allocator, ctx: *c.libusb_context) ![]DeviceSnapshot {
     var device_list: [*c]?*c.libusb_device = undefined;
@@ -475,48 +473,11 @@ pub fn streamMaskForMode(op_mode: OperationMode) u32 {
 }
 
 pub fn isSupportedSamplerate(samplerate_hz: u64) bool {
-    _ = gpioTimingForSamplerate(samplerate_hz) catch return false;
-    return true;
+    return caps.isSupportedSamplerate(samplerate_hz);
 }
 
 pub fn gpioTimingForSamplerate(samplerate_hz: u64) !GpioTiming {
-    return switch (samplerate_hz) {
-        1_000_000_000 => .{ .mode = 0, .div = 0 },
-        500_000_000 => .{ .mode = 1, .div = 0 },
-        250_000_000 => .{ .mode = 2, .div = 0 },
-        125_000_000 => .{ .mode = 3, .div = 0 },
-        800_000_000 => .{ .mode = 4, .div = 0 },
-        400_000_000 => .{ .mode = 5, .div = 0 },
-        200_000_000 => .{ .mode = 6, .div = 0 },
-        100_000_000 => .{ .mode = 7, .div = 0 },
-        else => .{
-            .mode = 7,
-            .div = switch (samplerate_hz) {
-                50_000_000 => 1,
-                25_000_000 => 3,
-                // 24 MHz is accepted for CLI compatibility and mapped to the nearest
-                // PXView-supported divider profile.
-                24_000_000 => 3,
-                20_000_000 => 4,
-                10_000_000 => 9,
-                5_000_000 => 19,
-                4_000_000 => 24,
-                2_000_000 => 49,
-                1_000_000 => 99,
-                500_000 => 199,
-                400_000 => 249,
-                200_000 => 499,
-                100_000 => 999,
-                50_000 => 1_999,
-                40_000 => 2_499,
-                20_000 => 4_999,
-                10_000 => 9_999,
-                5_000 => 19_999,
-                2_000 => 49_999,
-                else => return error.InvalidSamplerate,
-            },
-        },
-    };
+    return caps.gpioTimingForSamplerate(samplerate_hz);
 }
 
 pub fn captureChannelMask(channel_count: u32) !u32 {

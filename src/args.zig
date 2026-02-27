@@ -1,10 +1,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const caps = @import("caps.zig");
 
 const clap = if (builtin.is_test) struct {} else @import("clap");
 
 pub const default_capture_samples_bytes: usize = 8 * 1024 * 1024;
-pub const default_capture_samplerate_hz: u64 = 250_000_000;
+pub const default_capture_samplerate_hz: u64 = caps.default_capture_samplerate_hz;
 
 pub const OutputFormat = enum {
     bin,
@@ -369,7 +370,7 @@ fn parseSamplerate(value: []const u8) ?u64 {
 }
 
 fn parseSamplerateValue(samplerate: u64) ?u64 {
-    if (!isSupportedSamplerate(samplerate)) return null;
+    if (!caps.isSupportedSamplerate(samplerate)) return null;
     return samplerate;
 }
 
@@ -403,7 +404,7 @@ fn parseSamplerateWithUnits(value: []const u8) ?u64 {
 
     const base = std.fmt.parseInt(u64, token, 10) catch return null;
     const samplerate = std.math.mul(u64, base, multiplier) catch return null;
-    if (!isSupportedSamplerate(samplerate)) return null;
+    if (!caps.isSupportedSamplerate(samplerate)) return null;
     return samplerate;
 }
 
@@ -427,40 +428,6 @@ fn inferOutputFormat(path: []const u8) OutputFormat {
         return .sr;
     }
     return .bin;
-}
-
-fn isSupportedSamplerate(samplerate_hz: u64) bool {
-    return switch (samplerate_hz) {
-        1_000_000_000,
-        800_000_000,
-        500_000_000,
-        400_000_000,
-        250_000_000,
-        200_000_000,
-        125_000_000,
-        100_000_000,
-        50_000_000,
-        25_000_000,
-        24_000_000,
-        20_000_000,
-        10_000_000,
-        5_000_000,
-        4_000_000,
-        2_000_000,
-        1_000_000,
-        500_000,
-        400_000,
-        200_000,
-        100_000,
-        50_000,
-        40_000,
-        20_000,
-        10_000,
-        5_000,
-        2_000,
-        => true,
-        else => false,
-    };
 }
 
 test "parseArgsFromSlice parses stdout capture options" {

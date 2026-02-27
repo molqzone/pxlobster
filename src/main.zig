@@ -2,7 +2,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 const args = @import("args.zig");
 const capture = if (builtin.is_test) struct {} else @import("capture.zig");
-const device = if (builtin.is_test) struct {} else @import("device.zig");
 const usb = if (builtin.is_test) struct {} else @import("usb.zig");
 
 const TestLibUsb = struct {
@@ -13,6 +12,21 @@ const TestLibUsb = struct {
     pub const libusb_device_handle = opaque {};
 };
 
+const TestDevice = struct {
+    pub fn isWchPxLogic(vid: u16, pid: u16) bool {
+        return vid == 0x1A86 and pid == 0x5237;
+    }
+
+    pub fn isLegacyPxLogic(vid: u16, pid: u16) bool {
+        return vid == 0x16C0 and pid == 0x05DC;
+    }
+
+    pub fn isSupportedPxLogic(vid: u16, pid: u16) bool {
+        return TestDevice.isWchPxLogic(vid, pid) or TestDevice.isLegacyPxLogic(vid, pid);
+    }
+};
+
+const device = if (builtin.is_test) TestDevice else @import("device.zig");
 const c = if (builtin.is_test) TestLibUsb else @import("pxlobster").libusb;
 
 pub fn main() !void {
@@ -45,26 +59,16 @@ const LogicModeProbe = union(enum) {
     unavailable,
 };
 
-const pxlogic_wch_id = struct { vid: u16, pid: u16 }{
-    .vid = 0x1A86,
-    .pid = 0x5237,
-};
-
-const pxlogic_legacy_id = struct { vid: u16, pid: u16 }{
-    .vid = 0x16C0,
-    .pid = 0x05DC,
-};
-
 fn isWchPxLogic(vid: u16, pid: u16) bool {
-    return vid == pxlogic_wch_id.vid and pid == pxlogic_wch_id.pid;
+    return device.isWchPxLogic(vid, pid);
 }
 
 fn isLegacyPxLogic(vid: u16, pid: u16) bool {
-    return vid == pxlogic_legacy_id.vid and pid == pxlogic_legacy_id.pid;
+    return device.isLegacyPxLogic(vid, pid);
 }
 
 fn isSupportedPxLogic(vid: u16, pid: u16) bool {
-    return isWchPxLogic(vid, pid) or isLegacyPxLogic(vid, pid);
+    return device.isSupportedPxLogic(vid, pid);
 }
 
 fn printUsage(writer: anytype) !void {
@@ -333,29 +337,34 @@ fn isPxManufacturer(handle: *c.libusb_device_handle, manufacturer_index: u8) boo
 }
 
 test "modelLabelForIdentity matches PX Logic profiles" {
+    const wch_vid: u16 = 0x1A86;
+    const wch_pid: u16 = 0x5237;
+    const legacy_vid: u16 = 0x16C0;
+    const legacy_pid: u16 = 0x05DC;
+
     try std.testing.expectEqualStrings(
         "PX-Logic U3 channel 32",
-        modelLabelForIdentity(pxlogic_wch_id.vid, pxlogic_wch_id.pid, c.LIBUSB_SPEED_SUPER, .unavailable).?,
+        modelLabelForIdentity(wch_vid, wch_pid, c.LIBUSB_SPEED_SUPER, .unavailable).?,
     );
     try std.testing.expectEqualStrings(
         "PX-Logic U2 channel 32",
-        modelLabelForIdentity(pxlogic_wch_id.vid, pxlogic_wch_id.pid, c.LIBUSB_SPEED_HIGH, .unavailable).?,
+        modelLabelForIdentity(wch_vid, wch_pid, c.LIBUSB_SPEED_HIGH, .unavailable).?,
     );
     try std.testing.expectEqualStrings(
         "PX-Logic U3 channel 16 Pro",
-        modelLabelForIdentity(pxlogic_legacy_id.vid, pxlogic_legacy_id.pid, c.LIBUSB_SPEED_SUPER, .{ .value = 1 }).?,
+        modelLabelForIdentity(legacy_vid, legacy_pid, c.LIBUSB_SPEED_SUPER, .{ .value = 1 }).?,
     );
     try std.testing.expectEqualStrings(
         "PX-Logic U2 channel 16 Plus",
-        modelLabelForIdentity(pxlogic_legacy_id.vid, pxlogic_legacy_id.pid, c.LIBUSB_SPEED_HIGH, .{ .value = 2 }).?,
+        modelLabelForIdentity(legacy_vid, legacy_pid, c.LIBUSB_SPEED_HIGH, .{ .value = 2 }).?,
     );
     try std.testing.expectEqualStrings(
         "PX-Logic U3 (mode unknown)",
-        modelLabelForIdentity(pxlogic_legacy_id.vid, pxlogic_legacy_id.pid, c.LIBUSB_SPEED_SUPER, .unavailable).?,
+        modelLabelForIdentity(legacy_vid, legacy_pid, c.LIBUSB_SPEED_SUPER, .unavailable).?,
     );
     try std.testing.expectEqualStrings(
         "PX-Logic (Busy)",
-        modelLabelForIdentity(pxlogic_legacy_id.vid, pxlogic_legacy_id.pid, c.LIBUSB_SPEED_HIGH, .busy).?,
+        modelLabelForIdentity(legacy_vid, legacy_pid, c.LIBUSB_SPEED_HIGH, .busy).?,
     );
 }
 
