@@ -284,13 +284,18 @@ test "writeSessionFromRawFile writes sigrok-compatible zip entry set" {
     defer tmp.cleanup();
 
     const raw_bytes = [_]u8{ 0x00, 0x01, 0x02, 0x03, 0x04, 0x05 };
-    const raw_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/capture.raw", .{tmp.sub_path});
+    const tmp_root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(tmp_root_path);
+
+    const raw_name = "capture.raw";
+    const sr_name = "capture.sr";
+    const raw_path = try std.fs.path.join(std.testing.allocator, &.{ tmp_root_path, raw_name });
     defer std.testing.allocator.free(raw_path);
-    const sr_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/capture.sr", .{tmp.sub_path});
+    const sr_path = try std.fs.path.join(std.testing.allocator, &.{ tmp_root_path, sr_name });
     defer std.testing.allocator.free(sr_path);
 
     {
-        const raw_file = try std.fs.cwd().createFile(raw_path, .{ .truncate = true });
+        const raw_file = try tmp.dir.createFile(raw_name, .{ .truncate = true });
         defer raw_file.close();
         try raw_file.writeAll(raw_bytes[0..]);
     }
@@ -302,7 +307,7 @@ test "writeSessionFromRawFile writes sigrok-compatible zip entry set" {
         .channel_count = 16,
     });
 
-    const sr_file = try std.fs.cwd().openFile(sr_path, .{});
+    const sr_file = try tmp.dir.openFile(sr_name, .{});
     defer sr_file.close();
 
     const archive_bytes = try sr_file.readToEndAlloc(std.testing.allocator, 1024 * 1024);

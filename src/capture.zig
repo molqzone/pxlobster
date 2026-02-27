@@ -14,8 +14,13 @@ var loop_interrupt_requested = std.atomic.Value(bool).init(false);
 
 pub const OutputFormat = session.OutputFormat;
 
+pub const CaptureOutputTarget = union(enum) {
+    file_path: []const u8,
+    stdout,
+};
+
 pub const CaptureOptions = struct {
-    output_path: []const u8,
+    output_target: CaptureOutputTarget,
     sample_bytes: usize,
     output_format: OutputFormat = .bin,
     decode_cross: bool = false,
@@ -104,7 +109,7 @@ fn captureRegisterTargetBytes(sample_bytes: usize, transfer_size: usize, op_mode
     return @intCast(sample_bytes);
 }
 
-pub fn runCaptureToFile(
+pub fn runCapture(
     allocator: std.mem.Allocator,
     ctx: *c.libusb_context,
     options: CaptureOptions,
@@ -145,23 +150,39 @@ pub fn runCaptureToFile(
         }
     }
 
+    const output_stdout = switch (options.output_target) {
+        .stdout => true,
+        .file_path => false,
+    };
+    if (options.output_format == .sr and output_stdout) return error.InvalidOutputTarget;
+
     var temp_output_path: ?[]u8 = null;
     defer if (temp_output_path) |path| {
         std.fs.cwd().deleteFile(path) catch {};
         allocator.free(path);
     };
 
-    const capture_output_path: []const u8 = blk: {
-        if (options.output_format == .sr) {
-            const temp_path = try std.fmt.allocPrint(allocator, "{s}.pxlobster.raw.tmp", .{options.output_path});
-            temp_output_path = temp_path;
-            break :blk temp_path;
-        }
-        break :blk options.output_path;
-    };
+    var output_file: std.fs.File = undefined;
+    var close_output_file = false;
+    switch (options.output_target) {
+        .file_path => |output_path| {
+            const capture_output_path: []const u8 = blk: {
+                if (options.output_format == .sr) {
+                    const temp_path = try std.fmt.allocPrint(allocator, "{s}.pxlobster.raw.tmp", .{output_path});
+                    temp_output_path = temp_path;
+                    break :blk temp_path;
+                }
+                break :blk output_path;
+            };
 
-    const output_file = try std.fs.cwd().createFile(capture_output_path, .{ .truncate = true });
-    defer output_file.close();
+            output_file = try std.fs.cwd().createFile(capture_output_path, .{ .truncate = true });
+            close_output_file = true;
+        },
+        .stdout => {
+            output_file = std.fs.File.stdout();
+        },
+    }
+    defer if (close_output_file) output_file.close();
 
     const loop_mode = options.capture_profile.op_mode == .loop;
     var loop_signal_guard = LoopSignalGuard{};
@@ -230,6 +251,7 @@ pub fn runCaptureToFile(
         .continuous = loop_mode,
         .decode_cross = options.decode_cross,
         .channel_count = capture_channel_count,
+        .sync_on_finish = !output_stdout,
         .producer_done = &shared.producer_done,
         .stop_requested = &shared.stop_requested,
     };
@@ -336,9 +358,13 @@ pub fn runCaptureToFile(
 
     if (options.output_format == .sr) {
         const raw_path = temp_output_path orelse return error.OutputPathMissing;
+        const output_path = switch (options.output_target) {
+            .file_path => |path| path,
+            .stdout => return error.InvalidOutputTarget,
+        };
         try output_file.sync();
         try srzip.writeSessionFromRawFile(allocator, .{
-            .output_path = options.output_path,
+            .output_path = output_path,
             .raw_path = raw_path,
             .samplerate_hz = options.capture_profile.samplerate_hz,
             .channel_count = capture_channel_count,

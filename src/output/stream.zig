@@ -12,6 +12,7 @@ pub const RawWriterContext = struct {
     continuous: bool = false,
     decode_cross: bool = false,
     channel_count: u32 = 16,
+    sync_on_finish: bool = true,
     producer_done: *std.atomic.Value(bool),
     stop_requested: *std.atomic.Value(bool),
     bytes_written: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -60,10 +61,12 @@ fn runPassthroughWriter(ctx: *RawWriterContext) void {
         ctx.stop_requested.store(true, .release);
     }
 
-    ctx.file.sync() catch {
-        ctx.failed.store(true, .release);
-        ctx.stop_requested.store(true, .release);
-    };
+    if (ctx.sync_on_finish) {
+        ctx.file.sync() catch {
+            ctx.failed.store(true, .release);
+            ctx.stop_requested.store(true, .release);
+        };
+    }
 }
 
 fn runDecodedCrossWriter(ctx: *RawWriterContext) void {
@@ -139,10 +142,12 @@ fn runDecodedCrossWriter(ctx: *RawWriterContext) void {
         ctx.stop_requested.store(true, .release);
     }
 
-    ctx.file.sync() catch {
-        ctx.failed.store(true, .release);
-        ctx.stop_requested.store(true, .release);
-    };
+    if (ctx.sync_on_finish) {
+        ctx.file.sync() catch {
+            ctx.failed.store(true, .release);
+            ctx.stop_requested.store(true, .release);
+        };
+    }
 }
 
 fn crossStripeBytes(channel_count: u32) !usize {
@@ -257,6 +262,35 @@ test "runRawWriter continuous mode ignores target_bytes limit" {
     const read_len = try file.readAll(written[0..]);
     try std.testing.expectEqual(payload.len, read_len);
     try std.testing.expectEqualSlices(u8, payload[0..], written[0..]);
+}
+
+test "runRawWriter can skip sync on finish for pipe-compatible output" {
+    var rb = try ringbuffer.RingBuffer.init(std.testing.allocator, 32);
+    defer rb.deinit();
+
+    const payload = [_]u8{ 0xAB, 0xCD, 0xEF };
+    _ = rb.push(payload[0..]);
+
+    var producer_done = std.atomic.Value(bool).init(true);
+    var stop_requested = std.atomic.Value(bool).init(false);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file = try tmp.dir.createFile("nosync.bin", .{ .read = true });
+    defer file.close();
+
+    var writer_ctx = RawWriterContext{
+        .ring = &rb,
+        .file = file,
+        .target_bytes = payload.len,
+        .sync_on_finish = false,
+        .producer_done = &producer_done,
+        .stop_requested = &stop_requested,
+    };
+    runRawWriter(&writer_ctx);
+
+    try std.testing.expect(!writer_ctx.failed.load(.acquire));
+    try std.testing.expectEqual(@as(u64, payload.len), writer_ctx.bytes_written.load(.acquire));
 }
 
 test "decodeCrossDataChunk decodes 16-channel stripes into packed samples" {

@@ -37,7 +37,7 @@ pub fn main() !void {
 const default_capture_samples_bytes: usize = 8 * 1024 * 1024;
 
 const CaptureCommand = struct {
-    output_path: []const u8,
+    output_target: capture.CaptureOutputTarget,
     output_format: capture.OutputFormat = .bin,
     sample_bytes: usize = default_capture_samples_bytes,
     decode_cross: bool = false,
@@ -63,6 +63,7 @@ fn parseArgs() !Command {
     const stdout = std.fs.File.stdout().deprecatedWriter();
     var requested_read_only: ?enum { scan, prime_fw } = null;
     var output_path: ?[]const u8 = null;
+    var output_stdout = false;
     var sample_bytes: usize = default_capture_samples_bytes;
     var samples_set = false;
     var decode_cross = false;
@@ -86,6 +87,10 @@ fn parseArgs() !Command {
             const value = args.next() orelse return error.InvalidArgument;
             if (value.len == 0) return error.InvalidArgument;
             output_path = value;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--stdout")) {
+            output_stdout = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--config")) {
@@ -123,7 +128,7 @@ fn parseArgs() !Command {
         return error.InvalidArgument;
     }
 
-    const capture_requested = output_path != null or samples_set or decode_cross or op_mode_set or samplerate_set;
+    const capture_requested = output_path != null or output_stdout or samples_set or decode_cross or op_mode_set or samplerate_set;
     if (requested_read_only != null and capture_requested) return error.InvalidArgument;
 
     if (requested_read_only) |command| {
@@ -133,16 +138,47 @@ fn parseArgs() !Command {
         };
     }
 
+    return .{ .capture = try buildCaptureCommand(
+        output_path,
+        output_stdout,
+        sample_bytes,
+        decode_cross,
+        op_mode,
+        samplerate_hz,
+    ) };
+}
+
+fn buildCaptureCommand(
+    output_path: ?[]const u8,
+    output_stdout: bool,
+    sample_bytes: usize,
+    decode_cross: bool,
+    op_mode: usb.OperationMode,
+    samplerate_hz: u64,
+) !CaptureCommand {
+    if (output_stdout and output_path != null) return error.InvalidArgument;
+
+    if (output_stdout) {
+        return .{
+            .output_target = .stdout,
+            .output_format = .bin,
+            .sample_bytes = sample_bytes,
+            .decode_cross = decode_cross,
+            .op_mode = op_mode,
+            .samplerate_hz = samplerate_hz,
+        };
+    }
+
     if (output_path) |path| {
         const output_format = inferOutputFormat(path);
-        return .{ .capture = .{
-            .output_path = path,
+        return .{
+            .output_target = .{ .file_path = path },
             .output_format = output_format,
             .sample_bytes = sample_bytes,
             .decode_cross = if (output_format == .sr) true else decode_cross,
             .op_mode = op_mode,
             .samplerate_hz = samplerate_hz,
-        } };
+        };
     }
 
     return error.InvalidArgument;
@@ -154,11 +190,13 @@ fn printUsage(writer: anytype) !void {
         \\  pxlobster --scan
         \\  pxlobster --prime-fw
         \\  pxlobster -o <path> [-c <key=value>] [--samples <bytes>] [--decode-cross] [--op-mode <buffer|stream|loop>] [--samplerate <hz>]
+        \\  pxlobster --stdout [-c <key=value>] [--samples <bytes>] [--decode-cross] [--op-mode <buffer|stream|loop>] [--samplerate <hz>]
         \\
         \\Options:
         \\  --scan               Read-only scan for supported PX Logic devices.
         \\  --prime-fw           Inject firmware to detected PX Logic devices.
         \\  -o, --output-file    Output file (.sr => Sigrok session, others => raw binary).
+        \\  --stdout             Stream raw binary capture to stdout (pipe-friendly).
         \\  -c, --config         Capture config key-value (e.g. samplerate=24M).
         \\  --samples            Capture bytes target for buffer/stream (default: 8388608).
         \\  --decode-cross       Decode PXView LA_CROSS_DATA into packed channel samples.
@@ -269,8 +307,8 @@ fn runCapture(cmd: CaptureCommand, stdout: anytype, stderr: anytype) !void {
         if (init_rc != 0 or ctx == null) return error.LibusbInitFailed;
         defer c.libusb_exit(ctx);
 
-        const stats = capture.runCaptureToFile(std.heap.page_allocator, ctx.?, .{
-            .output_path = cmd.output_path,
+        const stats = capture.runCapture(std.heap.page_allocator, ctx.?, .{
+            .output_target = cmd.output_target,
             .output_format = cmd.output_format,
             .sample_bytes = cmd.sample_bytes,
             .decode_cross = cmd.decode_cross,
@@ -283,10 +321,20 @@ fn runCapture(cmd: CaptureCommand, stdout: anytype, stderr: anytype) !void {
             std.process.exit(1);
         };
 
-        try stdout.print(
-            "capture complete: file={s} bytes_out={d} bytes_in={d} dropped={d} elapsed_ms={d}\n",
-            .{ cmd.output_path, stats.bytes_out, stats.bytes_in, stats.dropped, stats.elapsed_ms },
-        );
+        switch (cmd.output_target) {
+            .file_path => |path| {
+                try stdout.print(
+                    "capture complete: file={s} bytes_out={d} bytes_in={d} dropped={d} elapsed_ms={d}\n",
+                    .{ path, stats.bytes_out, stats.bytes_in, stats.dropped, stats.elapsed_ms },
+                );
+            },
+            .stdout => {
+                try stderr.print(
+                    "capture complete: output=stdout bytes_out={d} bytes_in={d} dropped={d} elapsed_ms={d}\n",
+                    .{ stats.bytes_out, stats.bytes_in, stats.dropped, stats.elapsed_ms },
+                );
+            },
+        }
     }
 }
 
@@ -531,4 +579,34 @@ test "inferOutputFormat auto-detects sr extension" {
     try std.testing.expectEqual(capture.OutputFormat.sr, inferOutputFormat("capture.sr"));
     try std.testing.expectEqual(capture.OutputFormat.sr, inferOutputFormat("CAPTURE.SR"));
     try std.testing.expectEqual(capture.OutputFormat.bin, inferOutputFormat("capture.bin"));
+}
+
+test "buildCaptureCommand selects stdout raw output" {
+    const cmd = try buildCaptureCommand(null, true, 4096, true, .stream, 24_000_000);
+    try std.testing.expectEqual(capture.OutputFormat.bin, cmd.output_format);
+    try std.testing.expectEqual(@as(usize, 4096), cmd.sample_bytes);
+    try std.testing.expectEqual(true, cmd.decode_cross);
+    try std.testing.expectEqual(usb.OperationMode.stream, cmd.op_mode);
+    try std.testing.expectEqual(@as(u64, 24_000_000), cmd.samplerate_hz);
+    switch (cmd.output_target) {
+        .stdout => {},
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "buildCaptureCommand rejects stdout and output-file conflict" {
+    try std.testing.expectError(
+        error.InvalidArgument,
+        buildCaptureCommand("capture.bin", true, 1024, false, .buffer, usb.DEFAULT_CAPTURE_SAMPLERATE_HZ),
+    );
+}
+
+test "buildCaptureCommand enables decode-cross for sr file output" {
+    const cmd = try buildCaptureCommand("capture.sr", false, 2048, false, .buffer, usb.DEFAULT_CAPTURE_SAMPLERATE_HZ);
+    try std.testing.expectEqual(capture.OutputFormat.sr, cmd.output_format);
+    try std.testing.expect(cmd.decode_cross);
+    switch (cmd.output_target) {
+        .file_path => |path| try std.testing.expectEqualStrings("capture.sr", path),
+        else => return error.TestExpectedEqual,
+    }
 }
