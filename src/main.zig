@@ -76,8 +76,8 @@ fn printUsage(writer: anytype) !void {
         \\Usage:
         \\  pxlobster --scan
         \\  pxlobster --prime-fw
-        \\  pxlobster -o <path> [-c <key=value>] [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [--samplerate <hz>]
-        \\  pxlobster --stdout [-c <key=value>] [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [--samplerate <hz>]
+        \\  pxlobster -o <path> [-c <key=value>] [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
+        \\  pxlobster --stdout [-c <key=value>] [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
         \\
         \\Options:
         \\  --scan               Read-only scan for supported PX Logic devices.
@@ -89,6 +89,7 @@ fn printUsage(writer: anytype) !void {
         \\  --time               Capture duration target in milliseconds (mutually exclusive with --samples).
         \\  --decode-cross       Decode PXView LA_CROSS_DATA into packed channel samples.
         \\  --mode               Capture operation mode: buffer | stream | loop (default: buffer).
+        \\  -t, --triggers       Trigger spec, e.g. 0=1,1=r,2=f,3=0.
         \\  --samplerate         Capture sample rate in Hz (must be a PXView-supported discrete value).
         \\  -h, --help           Show this help.
         \\
@@ -218,6 +219,10 @@ fn runCapture(cmd: args.CaptureCommand, stdout: anytype, stderr: anytype) !void 
             .capture_profile = .{
                 .op_mode = op_mode,
                 .samplerate_hz = cmd.samplerate_hz,
+                .trigger_zero = cmd.trigger_zero,
+                .trigger_one = cmd.trigger_one,
+                .trigger_rise = cmd.trigger_rise,
+                .trigger_fall = cmd.trigger_fall,
             },
         }) catch |err| {
             try stderr.print("capture failed: {s}\n", .{@errorName(err)});

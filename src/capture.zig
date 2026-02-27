@@ -147,6 +147,15 @@ fn resolveTargetBytes(options: CaptureOptions, channel_count: u32) !usize {
     return options.sample_bytes;
 }
 
+fn validateTriggerMasksForChannelCount(profile: usb.CaptureProfile, channel_count: u32) !void {
+    const channel_mask = try usb.captureChannelMask(channel_count);
+    const invalid_bits: u32 = ~channel_mask;
+    if ((profile.trigger_zero & invalid_bits) != 0) return error.InvalidTriggerChannel;
+    if ((profile.trigger_one & invalid_bits) != 0) return error.InvalidTriggerChannel;
+    if ((profile.trigger_rise & invalid_bits) != 0) return error.InvalidTriggerChannel;
+    if ((profile.trigger_fall & invalid_bits) != 0) return error.InvalidTriggerChannel;
+}
+
 pub fn runCapture(
     allocator: std.mem.Allocator,
     ctx: *c.libusb_context,
@@ -183,6 +192,7 @@ pub fn runCapture(
         try detectCaptureChannelCountStrict(handle, opened.vid, opened.pid)
     else
         detectCaptureChannelCount(handle, opened.vid, opened.pid);
+    try validateTriggerMasksForChannelCount(options.capture_profile, capture_channel_count);
     const target_bytes = try resolveTargetBytes(options, capture_channel_count);
     if (options.decode_cross) {
         const stripe_bytes = @as(usize, @intCast(capture_channel_count)) * @sizeOf(u64);
@@ -668,6 +678,24 @@ test "resolveTargetBytes accepts duration target with zero sample_bytes" {
         .capture_profile = .{ .op_mode = .buffer, .samplerate_hz = 24_000_000 },
     }, 16);
     try std.testing.expectEqual(@as(usize, 48_000), target);
+}
+
+test "validateTriggerMasksForChannelCount accepts masks within channel range" {
+    try validateTriggerMasksForChannelCount(.{
+        .trigger_zero = 1 << 15,
+        .trigger_one = 1 << 0,
+        .trigger_rise = 1 << 7,
+        .trigger_fall = 1 << 3,
+    }, 16);
+}
+
+test "validateTriggerMasksForChannelCount rejects masks outside channel range" {
+    try std.testing.expectError(error.InvalidTriggerChannel, validateTriggerMasksForChannelCount(.{
+        .trigger_one = 1 << 16,
+    }, 16));
+    try std.testing.expectError(error.InvalidTriggerChannel, validateTriggerMasksForChannelCount(.{
+        .trigger_fall = 1 << 31,
+    }, 16));
 }
 
 test "visitCandidateIndexesByPriority follows supported ID order" {

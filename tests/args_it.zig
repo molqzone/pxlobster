@@ -9,6 +9,8 @@ pub fn main() !void {
         "65536",
         "--mode",
         "stream",
+        "--triggers",
+        "0=1,1=r",
         "--samplerate",
         "24000000",
     }, std.heap.page_allocator);
@@ -24,6 +26,19 @@ pub fn main() !void {
             if (capture_cmd.time_ms != null) return error.UnexpectedTimeSetting;
             if (capture_cmd.op_mode != .stream) return error.UnexpectedOperationMode;
             if (capture_cmd.samplerate_hz != 24_000_000) return error.UnexpectedSamplerate;
+            if (capture_cmd.trigger_one != 0x1) return error.UnexpectedTriggerOneMask;
+            if (capture_cmd.trigger_rise != 0x2) return error.UnexpectedTriggerRiseMask;
+        },
+        else => return error.ExpectedCaptureCommand,
+    }
+
+    const short_trigger_argv = [_][]const u8{ "pxlobster", "--stdout", "-t", "2=f,3=0" };
+    var short_trigger_cmd = try args.parseArgsFromSlice(&short_trigger_argv, std.heap.page_allocator);
+    defer args.deinitCommand(&short_trigger_cmd, std.heap.page_allocator);
+    switch (short_trigger_cmd) {
+        .capture => |capture_cmd| {
+            if (capture_cmd.trigger_fall != (1 << 2)) return error.UnexpectedTriggerFallMask;
+            if (capture_cmd.trigger_zero != (1 << 3)) return error.UnexpectedTriggerZeroMask;
         },
         else => return error.ExpectedCaptureCommand,
     }
@@ -51,6 +66,14 @@ pub fn main() !void {
     const time_loop_conflict_argv = [_][]const u8{ "pxlobster", "--stdout", "--time", "10", "--mode", "loop" };
     const time_loop_conflict = args.parseArgsFromSlice(&time_loop_conflict_argv, std.heap.page_allocator);
     if (time_loop_conflict) |_| {
+        return error.ExpectedInvalidArgument;
+    } else |err| {
+        if (err != error.InvalidArgument) return err;
+    }
+
+    const invalid_trigger_argv = [_][]const u8{ "pxlobster", "--stdout", "--triggers", "0=x" };
+    const invalid_trigger = args.parseArgsFromSlice(&invalid_trigger_argv, std.heap.page_allocator);
+    if (invalid_trigger) |_| {
         return error.ExpectedInvalidArgument;
     } else |err| {
         if (err != error.InvalidArgument) return err;
