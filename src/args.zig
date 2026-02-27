@@ -46,6 +46,11 @@ pub const CaptureCommand = struct {
     owns_output_path: bool = false,
 };
 
+pub const ParsedCommand = struct {
+    command: Command,
+    verbose: bool = false,
+};
+
 pub const Command = union(enum) {
     scan,
     prime_fw,
@@ -54,6 +59,7 @@ pub const Command = union(enum) {
 
 const clap_params = if (builtin.is_test) 0 else clap.parseParamsComptime(
     \\-h, --help
+    \\-v, --verbose
     \\    --scan
     \\    --prime-fw
     \\-o, --output-file <str>...
@@ -70,6 +76,7 @@ const clap_params = if (builtin.is_test) 0 else clap.parseParamsComptime(
 
 const ParsedArgsView = struct {
     help: usize,
+    verbose: usize,
     scan: usize,
     @"prime-fw": usize,
     @"output-file": []const []const u8,
@@ -85,6 +92,7 @@ const ParsedArgsView = struct {
 
 const ParsedArgsOwned = struct {
     help: usize = 0,
+    verbose: usize = 0,
     scan: usize = 0,
     @"prime-fw": usize = 0,
     @"output-file": std.ArrayListUnmanaged([]const u8) = .{},
@@ -110,6 +118,7 @@ const ParsedArgsOwned = struct {
     fn view(self: *const ParsedArgsOwned) ParsedArgsView {
         return .{
             .help = self.help,
+            .verbose = self.verbose,
             .scan = self.scan,
             .@"prime-fw" = self.@"prime-fw",
             .@"output-file" = self.@"output-file".items,
@@ -126,10 +135,18 @@ const ParsedArgsOwned = struct {
 };
 
 pub fn parseArgs() !Command {
+    return (try parseArgsWithVerbose()).command;
+}
+
+pub fn parseArgsWithVerbose() !ParsedCommand {
     return parseArgsWithClap();
 }
 
 pub fn parseArgsFromSlice(args: []const []const u8, allocator: std.mem.Allocator) !Command {
+    return (try parseArgsFromSliceWithVerbose(args, allocator)).command;
+}
+
+pub fn parseArgsFromSliceWithVerbose(args: []const []const u8, allocator: std.mem.Allocator) !ParsedCommand {
     if (comptime builtin.is_test) {
         return parseArgsFromSliceWithoutClap(args, allocator);
     }
@@ -143,9 +160,9 @@ pub fn parseArgsFromSlice(args: []const []const u8, allocator: std.mem.Allocator
     }) catch return error.InvalidArgument;
     defer result.deinit();
 
-    var cmd = try commandFromParsedArgs(result.args);
-    try detachOutputPathIfNeeded(&cmd, allocator);
-    return cmd;
+    var parsed = try commandFromParsedArgs(result.args);
+    try detachOutputPathIfNeeded(&parsed.command, allocator);
+    return parsed;
 }
 
 pub fn deinitCommand(cmd: *Command, allocator: std.mem.Allocator) void {
@@ -162,14 +179,14 @@ pub fn deinitCommand(cmd: *Command, allocator: std.mem.Allocator) void {
     }
 }
 
-fn parseArgsWithClap() !Command {
+fn parseArgsWithClap() !ParsedCommand {
     if (comptime builtin.is_test) {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const argv = try std.process.argsAlloc(arena.allocator());
-        var cmd = try parseArgsFromSliceWithoutClap(argv, std.heap.page_allocator);
-        try detachOutputPathIfNeeded(&cmd, std.heap.page_allocator);
-        return cmd;
+        var parsed = try parseArgsFromSliceWithoutClap(argv, std.heap.page_allocator);
+        try detachOutputPathIfNeeded(&parsed.command, std.heap.page_allocator);
+        return parsed;
     }
 
     var diag = clap.Diagnostic{};
@@ -179,12 +196,12 @@ fn parseArgsWithClap() !Command {
     }) catch return error.InvalidArgument;
     defer result.deinit();
 
-    var cmd = try commandFromParsedArgs(result.args);
-    try detachOutputPathIfNeeded(&cmd, std.heap.page_allocator);
-    return cmd;
+    var parsed = try commandFromParsedArgs(result.args);
+    try detachOutputPathIfNeeded(&parsed.command, std.heap.page_allocator);
+    return parsed;
 }
 
-fn parseArgsFromSliceWithoutClap(args: []const []const u8, allocator: std.mem.Allocator) !Command {
+fn parseArgsFromSliceWithoutClap(args: []const []const u8, allocator: std.mem.Allocator) !ParsedCommand {
     const cli_args = if (args.len > 0) args[1..] else args;
     var parsed: ParsedArgsOwned = .{};
     defer parsed.deinit(allocator);
@@ -195,6 +212,10 @@ fn parseArgsFromSliceWithoutClap(args: []const []const u8, allocator: std.mem.Al
 
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             parsed.help += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--verbose")) {
+            parsed.verbose += 1;
             continue;
         }
         if (std.mem.eql(u8, arg, "--scan")) {
@@ -272,8 +293,9 @@ fn parseArgsFromSliceWithoutClap(args: []const []const u8, allocator: std.mem.Al
     return commandFromParsedArgs(parsed.view());
 }
 
-fn commandFromParsedArgs(parsed_args: anytype) !Command {
+fn commandFromParsedArgs(parsed_args: anytype) !ParsedCommand {
     if (@field(parsed_args, "help") > 0) return error.ShowHelp;
+    const verbose = @field(parsed_args, "verbose") > 0;
 
     const scan_count = @field(parsed_args, "scan");
     const prime_fw_count = @field(parsed_args, "prime-fw");
@@ -344,23 +366,29 @@ fn commandFromParsedArgs(parsed_args: anytype) !Command {
     if (requested_read_only != null and capture_requested) return error.InvalidArgument;
 
     if (requested_read_only) |command| {
-        return switch (command) {
-            .scan => .scan,
-            .prime_fw => .prime_fw,
+        return .{
+            .command = switch (command) {
+                .scan => .scan,
+                .prime_fw => .prime_fw,
+            },
+            .verbose = verbose,
         };
     }
 
-    return .{ .capture = try buildCaptureCommand(
-        output_path,
-        output_stdout,
-        sample_bytes,
-        time_ms,
-        decode_cross,
-        op_mode,
-        samplerate_hz,
-        trigger_masks,
-        triggers_set,
-    ) };
+    return .{
+        .command = .{ .capture = try buildCaptureCommand(
+            output_path,
+            output_stdout,
+            sample_bytes,
+            time_ms,
+            decode_cross,
+            op_mode,
+            samplerate_hz,
+            trigger_masks,
+            triggers_set,
+        ) },
+        .verbose = verbose,
+    };
 }
 
 fn lastValue(comptime T: type, values: []const T) ?T {
@@ -600,9 +628,29 @@ test "parseArgsFromSlice leaves triggers_specified false by default" {
     const argv = [_][]const u8{ "pxlobster", "--stdout", "--samples", "1024" };
     const cmd = try parseArgsFromSlice(&argv, std.testing.allocator);
     switch (cmd) {
-        .capture => |capture_cmd| try std.testing.expect(!capture_cmd.triggers_specified),
+        .capture => |capture_cmd| {
+            try std.testing.expect(!capture_cmd.triggers_specified);
+        },
         else => return error.TestExpectedEqual,
     }
+}
+
+test "parseArgsFromSlice enables verbose for capture and scan commands" {
+    const capture_argv = [_][]const u8{ "pxlobster", "--stdout", "--samples", "1024", "-v" };
+    const capture_result = try parseArgsFromSliceWithVerbose(&capture_argv, std.testing.allocator);
+    switch (capture_result.command) {
+        .capture => {},
+        else => return error.TestExpectedEqual,
+    }
+    try std.testing.expect(capture_result.verbose);
+
+    const scan_argv = [_][]const u8{ "pxlobster", "--scan", "--verbose" };
+    const scan_result = try parseArgsFromSliceWithVerbose(&scan_argv, std.testing.allocator);
+    switch (scan_result.command) {
+        .scan => {},
+        else => return error.TestExpectedEqual,
+    }
+    try std.testing.expect(scan_result.verbose);
 }
 
 test "parseArgsFromSlice rejects stdout and output-file conflict" {

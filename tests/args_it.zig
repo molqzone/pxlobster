@@ -33,10 +33,11 @@ pub fn main() !void {
         else => return error.ExpectedCaptureCommand,
     }
 
-    const short_trigger_argv = [_][]const u8{ "pxlobster", "--stdout", "-t", "2=f,3=0" };
-    var short_trigger_cmd = try args.parseArgsFromSlice(&short_trigger_argv, std.heap.page_allocator);
-    defer args.deinitCommand(&short_trigger_cmd, std.heap.page_allocator);
-    switch (short_trigger_cmd) {
+    const short_trigger_argv = [_][]const u8{ "pxlobster", "--stdout", "-t", "2=f,3=0", "-v" };
+    var short_trigger_result = try args.parseArgsFromSliceWithVerbose(&short_trigger_argv, std.heap.page_allocator);
+    defer args.deinitCommand(&short_trigger_result.command, std.heap.page_allocator);
+    if (!short_trigger_result.verbose) return error.ExpectedVerbose;
+    switch (short_trigger_result.command) {
         .capture => |capture_cmd| {
             if (capture_cmd.trigger_fall != (1 << 2)) return error.UnexpectedTriggerFallMask;
             if (capture_cmd.trigger_zero != (1 << 3)) return error.UnexpectedTriggerZeroMask;
@@ -56,6 +57,24 @@ pub fn main() !void {
             if (capture_cmd.triggers_specified) return error.UnexpectedTriggersSpecified;
         },
         else => return error.ExpectedCaptureCommand,
+    }
+
+    const scan_verbose_argv = [_][]const u8{ "pxlobster", "--scan", "--verbose" };
+    var scan_verbose_result = try args.parseArgsFromSliceWithVerbose(&scan_verbose_argv, std.heap.page_allocator);
+    defer args.deinitCommand(&scan_verbose_result.command, std.heap.page_allocator);
+    if (!scan_verbose_result.verbose) return error.ExpectedVerbose;
+    switch (scan_verbose_result.command) {
+        .scan => {},
+        else => return error.ExpectedScanCommand,
+    }
+
+    const prime_verbose_argv = [_][]const u8{ "pxlobster", "--prime-fw", "-v" };
+    var prime_verbose_result = try args.parseArgsFromSliceWithVerbose(&prime_verbose_argv, std.heap.page_allocator);
+    defer args.deinitCommand(&prime_verbose_result.command, std.heap.page_allocator);
+    if (!prime_verbose_result.verbose) return error.ExpectedVerbose;
+    switch (prime_verbose_result.command) {
+        .prime_fw => {},
+        else => return error.ExpectedPrimeFwCommand,
     }
 
     const time_samples_conflict_argv = [_][]const u8{ "pxlobster", "--stdout", "--time", "10", "--samples", "4096" };

@@ -33,7 +33,7 @@ pub fn main() !void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
     const stderr = std.fs.File.stderr().deprecatedWriter();
 
-    var cmd = args.parseArgs() catch |err| switch (err) {
+    var parsed = args.parseArgsWithVerbose() catch |err| switch (err) {
         error.ShowHelp => {
             try printUsage(stdout);
             return;
@@ -44,12 +44,12 @@ pub fn main() !void {
         },
         else => return err,
     };
-    defer args.deinitCommand(&cmd, std.heap.page_allocator);
+    defer args.deinitCommand(&parsed.command, std.heap.page_allocator);
 
-    switch (cmd) {
-        .scan => try scanUsbDevices(stdout),
-        .prime_fw => try primeFirmware(stdout),
-        .capture => |options| try runCapture(options, stdout, stderr),
+    switch (parsed.command) {
+        .scan => try scanUsbDevices(stdout, stderr, parsed.verbose),
+        .prime_fw => try primeFirmware(stdout, stderr, parsed.verbose),
+        .capture => |options| try runCapture(options, stdout, stderr, parsed.verbose),
     }
 }
 
@@ -74,10 +74,10 @@ fn isSupportedPxLogic(vid: u16, pid: u16) bool {
 fn printUsage(writer: anytype) !void {
     try writer.writeAll(
         \\Usage:
-        \\  pxlobster --scan
-        \\  pxlobster --prime-fw
-        \\  pxlobster -o <path> [-c <key=value>] [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
-        \\  pxlobster --stdout [-c <key=value>] [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
+        \\  pxlobster [--verbose] --scan
+        \\  pxlobster [--verbose] --prime-fw
+        \\  pxlobster [--verbose] -o <path> [-c <key=value>] [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
+        \\  pxlobster [--verbose] --stdout [-c <key=value>] [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
         \\
         \\Options:
         \\  --scan               Read-only scan for supported PX Logic devices.
@@ -91,6 +91,7 @@ fn printUsage(writer: anytype) !void {
         \\  --mode               Capture operation mode: buffer | stream | loop (default: buffer).
         \\  -t, --triggers       Trigger spec, e.g. 0=1,1=r,2=f,3=0.
         \\  --samplerate         Capture sample rate in Hz (must be a PXView-supported discrete value).
+        \\  -v, --verbose        Enable verbose debug logs (written to stderr).
         \\  -h, --help           Show this help.
         \\
         \\Notes:
@@ -100,14 +101,21 @@ fn printUsage(writer: anytype) !void {
     );
 }
 
-fn scanUsbDevices(writer: anytype) !void {
+fn verboseLog(enabled: bool, writer: anytype, comptime fmt: []const u8, values: anytype) !void {
+    if (!enabled) return;
+    try writer.print(fmt, values);
+}
+
+fn scanUsbDevices(stdout: anytype, stderr: anytype, verbose: bool) !void {
     if (comptime builtin.is_test) {
         return;
     } else {
+        try verboseLog(verbose, stderr, "verbose: scan start\n", .{});
         var ctx: ?*c.libusb_context = null;
         const init_rc = c.libusb_init(&ctx);
         if (init_rc != 0 or ctx == null) return error.LibusbInitFailed;
         defer c.libusb_exit(ctx);
+        try verboseLog(verbose, stderr, "verbose: libusb_init ok\n", .{});
 
         const active_ctx = ctx.?;
 
@@ -115,6 +123,7 @@ fn scanUsbDevices(writer: anytype) !void {
         const count = c.libusb_get_device_list(active_ctx, &device_list);
         if (count < 0) return error.LibusbGetDeviceListFailed;
         defer c.libusb_free_device_list(device_list, 1);
+        try verboseLog(verbose, stderr, "verbose: device count={d}\n", .{count});
 
         var found_supported = false;
         const count_usize: usize = @intCast(count);
@@ -127,27 +136,35 @@ fn scanUsbDevices(writer: anytype) !void {
 
             const vid: u16 = @intCast(desc.idVendor);
             const pid: u16 = @intCast(desc.idProduct);
+            const bus = c.libusb_get_bus_number(dev_opt.?);
+            const address = c.libusb_get_device_address(dev_opt.?);
+            const speed = c.libusb_get_device_speed(dev_opt.?);
+            try verboseLog(verbose, stderr, "verbose: scan device bus={d} addr={d} speed={d} vid={X:0>4} pid={X:0>4}\n", .{ bus, address, speed, vid, pid });
             const tag = detectTag(dev_opt.?, vid, pid);
             if (tag) |label| {
                 found_supported = true;
-                try writer.print("{X:0>4}:{X:0>4}  {s}\n", .{ vid, pid, label });
+                try verboseLog(verbose, stderr, "verbose: matched {s}\n", .{label});
+                try stdout.print("{X:0>4}:{X:0>4}  {s}\n", .{ vid, pid, label });
             }
         }
 
         if (!found_supported) {
-            try writer.writeAll("No supported devices found.\n");
+            try stdout.writeAll("No supported devices found.\n");
+            try verboseLog(verbose, stderr, "verbose: no supported devices detected\n", .{});
         }
     }
 }
 
-fn primeFirmware(writer: anytype) !void {
+fn primeFirmware(stdout: anytype, stderr: anytype, verbose: bool) !void {
     if (comptime builtin.is_test) {
         return;
     } else {
+        try verboseLog(verbose, stderr, "verbose: prime-fw start\n", .{});
         var ctx: ?*c.libusb_context = null;
         const init_rc = c.libusb_init(&ctx);
         if (init_rc != 0 or ctx == null) return error.LibusbInitFailed;
         defer c.libusb_exit(ctx);
+        try verboseLog(verbose, stderr, "verbose: libusb_init ok\n", .{});
 
         const active_ctx = ctx.?;
 
@@ -155,6 +172,7 @@ fn primeFirmware(writer: anytype) !void {
         const count = c.libusb_get_device_list(active_ctx, &device_list);
         if (count < 0) return error.LibusbGetDeviceListFailed;
         defer c.libusb_free_device_list(device_list, 1);
+        try verboseLog(verbose, stderr, "verbose: device count={d}\n", .{count});
 
         var found_supported = false;
         const count_usize: usize = @intCast(count);
@@ -169,32 +187,53 @@ fn primeFirmware(writer: anytype) !void {
             const pid: u16 = @intCast(desc.idProduct);
             if (!isSupportedPxLogic(vid, pid)) continue;
             found_supported = true;
+            try verboseLog(verbose, stderr, "verbose: prime candidate vid={X:0>4} pid={X:0>4}\n", .{ vid, pid });
 
             const state = device.preparePxLogicDevice(dev_opt.?, .{});
+            try verboseLog(verbose, stderr, "verbose: prime result={s}\n", .{@tagName(state)});
             switch (state) {
                 .ready => {
                     const label = detectTag(dev_opt.?, vid, pid) orelse "PX-Logic (ready)";
-                    try writer.print("{X:0>4}:{X:0>4}  {s}  [fw loaded]\n", .{ vid, pid, label });
+                    try stdout.print("{X:0>4}:{X:0>4}  {s}  [fw loaded]\n", .{ vid, pid, label });
                 },
-                .busy => try writer.print("{X:0>4}:{X:0>4}  PX-Logic (Busy)\n", .{ vid, pid }),
-                .failed => try writer.print("{X:0>4}:{X:0>4}  PX-Logic (firmware load failed)\n", .{ vid, pid }),
+                .busy => try stdout.print("{X:0>4}:{X:0>4}  PX-Logic (Busy)\n", .{ vid, pid }),
+                .failed => try stdout.print("{X:0>4}:{X:0>4}  PX-Logic (firmware load failed)\n", .{ vid, pid }),
             }
         }
 
         if (!found_supported) {
-            try writer.writeAll("No supported devices found.\n");
+            try stdout.writeAll("No supported devices found.\n");
+            try verboseLog(verbose, stderr, "verbose: no supported devices detected\n", .{});
         }
     }
 }
 
-fn runCapture(cmd: args.CaptureCommand, stdout: anytype, stderr: anytype) !void {
+fn runCapture(cmd: args.CaptureCommand, stdout: anytype, stderr: anytype, verbose: bool) !void {
     if (comptime builtin.is_test) {
         return;
     } else {
+        try verboseLog(verbose, stderr, "verbose: capture start mode={s} samplerate={d} samples={d} decode_cross={any} strict_probe={any}\n", .{
+            @tagName(cmd.op_mode),
+            cmd.samplerate_hz,
+            cmd.sample_bytes,
+            cmd.decode_cross,
+            cmd.triggers_specified,
+        });
+        if (cmd.time_ms) |duration_ms| {
+            try verboseLog(verbose, stderr, "verbose: capture duration_ms={d}\n", .{duration_ms});
+        }
+        try verboseLog(verbose, stderr, "verbose: trigger masks zero=0x{X:0>8} one=0x{X:0>8} rise=0x{X:0>8} fall=0x{X:0>8}\n", .{
+            cmd.trigger_zero,
+            cmd.trigger_one,
+            cmd.trigger_rise,
+            cmd.trigger_fall,
+        });
+
         var ctx: ?*c.libusb_context = null;
         const init_rc = c.libusb_init(&ctx);
         if (init_rc != 0 or ctx == null) return error.LibusbInitFailed;
         defer c.libusb_exit(ctx);
+        try verboseLog(verbose, stderr, "verbose: libusb_init ok\n", .{});
 
         const output_target = switch (cmd.output_target) {
             .file_path => |path| capture.CaptureOutputTarget{ .file_path = path },
@@ -229,6 +268,13 @@ fn runCapture(cmd: args.CaptureCommand, stdout: anytype, stderr: anytype) !void 
             try stderr.print("capture failed: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
+
+        try verboseLog(verbose, stderr, "verbose: capture done bytes_out={d} bytes_in={d} dropped={d} elapsed_ms={d}\n", .{
+            stats.bytes_out,
+            stats.bytes_in,
+            stats.dropped,
+            stats.elapsed_ms,
+        });
 
         switch (cmd.output_target) {
             .file_path => |path| {
