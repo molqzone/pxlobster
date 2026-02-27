@@ -7,7 +7,7 @@ pub fn main() !void {
         "--stdout",
         "--samples",
         "65536",
-        "--op-mode",
+        "--mode",
         "stream",
         "--samplerate",
         "24000000",
@@ -48,7 +48,7 @@ pub fn main() !void {
         if (err != error.InvalidArgument) return err;
     }
 
-    const time_loop_conflict_argv = [_][]const u8{ "pxlobster", "--stdout", "--time", "10", "--op-mode", "loop" };
+    const time_loop_conflict_argv = [_][]const u8{ "pxlobster", "--stdout", "--time", "10", "--mode", "loop" };
     const time_loop_conflict = args.parseArgsFromSlice(&time_loop_conflict_argv, std.heap.page_allocator);
     if (time_loop_conflict) |_| {
         return error.ExpectedInvalidArgument;

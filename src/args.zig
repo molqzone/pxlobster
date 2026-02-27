@@ -50,7 +50,7 @@ const clap_params = if (builtin.is_test) 0 else clap.parseParamsComptime(
     \\    --samples <usize>...
     \\    --time <u64>...
     \\    --decode-cross
-    \\    --op-mode <str>...
+    \\    --mode <str>...
     \\    --samplerate <u64>...
     \\
 );
@@ -65,7 +65,7 @@ const ParsedArgsView = struct {
     samples: []const usize,
     time: []const u64,
     @"decode-cross": usize,
-    @"op-mode": []const []const u8,
+    mode: []const []const u8,
     samplerate: []const u64,
 };
 
@@ -79,7 +79,7 @@ const ParsedArgsOwned = struct {
     samples: std.ArrayListUnmanaged(usize) = .{},
     time: std.ArrayListUnmanaged(u64) = .{},
     @"decode-cross": usize = 0,
-    @"op-mode": std.ArrayListUnmanaged([]const u8) = .{},
+    mode: std.ArrayListUnmanaged([]const u8) = .{},
     samplerate: std.ArrayListUnmanaged(u64) = .{},
 
     fn deinit(self: *ParsedArgsOwned, allocator: std.mem.Allocator) void {
@@ -87,7 +87,7 @@ const ParsedArgsOwned = struct {
         self.config.deinit(allocator);
         self.samples.deinit(allocator);
         self.time.deinit(allocator);
-        self.@"op-mode".deinit(allocator);
+        self.mode.deinit(allocator);
         self.samplerate.deinit(allocator);
     }
 
@@ -102,7 +102,7 @@ const ParsedArgsOwned = struct {
             .samples = self.samples.items,
             .time = self.time.items,
             .@"decode-cross" = self.@"decode-cross",
-            .@"op-mode" = self.@"op-mode".items,
+            .mode = self.mode.items,
             .samplerate = self.samplerate.items,
         };
     }
@@ -227,10 +227,10 @@ fn parseArgsFromSliceWithoutClap(args: []const []const u8, allocator: std.mem.Al
             continue;
         }
 
-        if (std.mem.eql(u8, arg, "--op-mode")) {
+        if (std.mem.eql(u8, arg, "--mode")) {
             i += 1;
             if (i >= cli_args.len) return error.InvalidArgument;
-            try parsed.@"op-mode".append(allocator, cli_args[i]);
+            try parsed.mode.append(allocator, cli_args[i]);
             continue;
         }
 
@@ -295,7 +295,7 @@ fn commandFromParsedArgs(parsed_args: anytype) !Command {
 
     var op_mode: OperationMode = .buffer;
     var op_mode_set = false;
-    const op_mode_values: []const []const u8 = @field(parsed_args, "op-mode");
+    const op_mode_values: []const []const u8 = @field(parsed_args, "mode");
     if (lastValue([]const u8, op_mode_values)) |value| {
         op_mode = parseOpMode(value) orelse return error.InvalidArgument;
         op_mode_set = true;
@@ -466,7 +466,7 @@ test "parseArgsFromSlice parses stdout capture options" {
         "--stdout",
         "--samples",
         "65536",
-        "--op-mode",
+        "--mode",
         "stream",
         "--samplerate",
         "24000000",
@@ -516,8 +516,8 @@ test "parseArgsFromSlice accepts samplerate from -c" {
     }
 }
 
-test "parseArgsFromSlice rejects invalid op-mode" {
-    const argv = [_][]const u8{ "pxlobster", "--stdout", "--op-mode", "invalid" };
+test "parseArgsFromSlice rejects invalid mode" {
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--mode", "invalid" };
     try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
 }
 
@@ -550,7 +550,7 @@ test "parseArgsFromSlice rejects zero time" {
 }
 
 test "parseArgsFromSlice rejects loop mode with time" {
-    const argv = [_][]const u8{ "pxlobster", "--stdout", "--time", "10", "--op-mode", "loop" };
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--time", "10", "--mode", "loop" };
     try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
 }
 
