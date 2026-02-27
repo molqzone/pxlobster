@@ -1,8 +1,21 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const capture = @import("capture.zig");
-const device = @import("device.zig");
-const usb = @import("usb.zig");
+const clap = blk: {
+    if (builtin.is_test) break :blk @import("clap_test_stub.zig");
+    break :blk @import("clap");
+};
+const capture = blk: {
+    if (builtin.is_test) break :blk @import("main_test_capture_stub.zig");
+    break :blk @import("capture.zig");
+};
+const device = blk: {
+    if (builtin.is_test) break :blk @import("main_test_device_stub.zig");
+    break :blk @import("device.zig");
+};
+const usb = blk: {
+    if (builtin.is_test) break :blk @import("main_test_usb_stub.zig");
+    break :blk @import("usb.zig");
+};
 
 const TestLibUsb = struct {
     pub const LIBUSB_SPEED_HIGH: c_int = 3;
@@ -18,7 +31,7 @@ pub fn main() !void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
     const stderr = std.fs.File.stderr().deprecatedWriter();
 
-    const cmd = parseArgs() catch |err| switch (err) {
+    var cmd = parseArgs() catch |err| switch (err) {
         error.ShowHelp => return,
         error.InvalidArgument => {
             try printUsage(stderr);
@@ -26,6 +39,7 @@ pub fn main() !void {
         },
         else => return err,
     };
+    defer deinitCommand(&cmd, std.heap.page_allocator);
 
     switch (cmd) {
         .scan => try scanUsbDevices(stdout),
@@ -43,6 +57,7 @@ const CaptureCommand = struct {
     decode_cross: bool = false,
     op_mode: usb.OperationMode = .buffer,
     samplerate_hz: u64 = usb.DEFAULT_CAPTURE_SAMPLERATE_HZ,
+    owns_output_path: bool = false,
 };
 
 const Command = union(enum) {
@@ -57,75 +72,238 @@ const LogicModeProbe = union(enum) {
     unavailable,
 };
 
-fn parseArgs() !Command {
-    var args = std.process.args();
-    _ = args.next();
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    var requested_read_only: ?enum { scan, prime_fw } = null;
-    var output_path: ?[]const u8 = null;
-    var output_stdout = false;
-    var sample_bytes: usize = default_capture_samples_bytes;
-    var samples_set = false;
-    var decode_cross = false;
-    var op_mode: usb.OperationMode = .buffer;
-    var op_mode_set = false;
-    var samplerate_hz: u64 = usb.DEFAULT_CAPTURE_SAMPLERATE_HZ;
-    var samplerate_set = false;
+const clap_params = if (builtin.is_test) 0 else clap.parseParamsComptime(
+    \\-h, --help
+    \\    --scan
+    \\    --prime-fw
+    \\-o, --output-file <str>...
+    \\    --stdout
+    \\-c, --config <str>...
+    \\    --samples <usize>...
+    \\    --decode-cross
+    \\    --op-mode <str>...
+    \\    --samplerate <u64>...
+    \\
+);
 
-    while (args.next()) |arg| {
+const ParsedArgsView = struct {
+    help: usize,
+    scan: usize,
+    @"prime-fw": usize,
+    @"output-file": []const []const u8,
+    stdout: usize,
+    config: []const []const u8,
+    samples: []const usize,
+    @"decode-cross": usize,
+    @"op-mode": []const []const u8,
+    samplerate: []const u64,
+};
+
+const ParsedArgsOwned = struct {
+    help: usize = 0,
+    scan: usize = 0,
+    @"prime-fw": usize = 0,
+    @"output-file": std.ArrayListUnmanaged([]const u8) = .{},
+    stdout: usize = 0,
+    config: std.ArrayListUnmanaged([]const u8) = .{},
+    samples: std.ArrayListUnmanaged(usize) = .{},
+    @"decode-cross": usize = 0,
+    @"op-mode": std.ArrayListUnmanaged([]const u8) = .{},
+    samplerate: std.ArrayListUnmanaged(u64) = .{},
+
+    fn deinit(self: *ParsedArgsOwned, allocator: std.mem.Allocator) void {
+        self.@"output-file".deinit(allocator);
+        self.config.deinit(allocator);
+        self.samples.deinit(allocator);
+        self.@"op-mode".deinit(allocator);
+        self.samplerate.deinit(allocator);
+    }
+
+    fn view(self: *const ParsedArgsOwned) ParsedArgsView {
+        return .{
+            .help = self.help,
+            .scan = self.scan,
+            .@"prime-fw" = self.@"prime-fw",
+            .@"output-file" = self.@"output-file".items,
+            .stdout = self.stdout,
+            .config = self.config.items,
+            .samples = self.samples.items,
+            .@"decode-cross" = self.@"decode-cross",
+            .@"op-mode" = self.@"op-mode".items,
+            .samplerate = self.samplerate.items,
+        };
+    }
+};
+
+fn parseArgs() !Command {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    return parseArgsWithClap() catch |err| switch (err) {
+        error.ShowHelp => {
+            try printUsage(stdout);
+            return error.ShowHelp;
+        },
+        else => return err,
+    };
+}
+
+fn parseArgsWithClap() !Command {
+    if (comptime builtin.is_test) {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const args = try std.process.argsAlloc(arena.allocator());
+        var cmd = try parseArgsFromSlice(args, arena.allocator());
+        try detachOutputPathIfNeeded(&cmd, std.heap.page_allocator);
+        return cmd;
+    }
+
+    var diag = clap.Diagnostic{};
+    var result = clap.parse(clap.Help, &clap_params, clap.parsers.default, .{
+        .allocator = std.heap.page_allocator,
+        .diagnostic = &diag,
+    }) catch return error.InvalidArgument;
+    defer result.deinit();
+
+    var cmd = try commandFromParsedArgs(result.args);
+    try detachOutputPathIfNeeded(&cmd, std.heap.page_allocator);
+    return cmd;
+}
+
+fn parseArgsFromSlice(args: []const []const u8, allocator: std.mem.Allocator) !Command {
+    if (comptime builtin.is_test) {
+        return parseArgsFromSliceWithoutClap(args, allocator);
+    }
+
+    const clap_args = if (args.len > 0) args[1..] else args;
+    var iter = clap.args.SliceIterator{ .args = clap_args };
+    var diag = clap.Diagnostic{};
+    var result = clap.parseEx(clap.Help, &clap_params, clap.parsers.default, &iter, .{
+        .diagnostic = &diag,
+        .allocator = allocator,
+    }) catch return error.InvalidArgument;
+    defer result.deinit();
+
+    return commandFromParsedArgs(result.args);
+}
+
+fn parseArgsFromSliceWithoutClap(args: []const []const u8, allocator: std.mem.Allocator) !Command {
+    const cli_args = if (args.len > 0) args[1..] else args;
+    var parsed: ParsedArgsOwned = .{};
+    defer parsed.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < cli_args.len) : (i += 1) {
+        const arg = cli_args[i];
+
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            parsed.help += 1;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--scan")) {
-            if (requested_read_only != null and requested_read_only.? != .scan) return error.InvalidArgument;
-            requested_read_only = .scan;
+            parsed.scan += 1;
             continue;
         }
         if (std.mem.eql(u8, arg, "--prime-fw")) {
-            if (requested_read_only != null and requested_read_only.? != .prime_fw) return error.InvalidArgument;
-            requested_read_only = .prime_fw;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output-file")) {
-            const value = args.next() orelse return error.InvalidArgument;
-            if (value.len == 0) return error.InvalidArgument;
-            output_path = value;
+            parsed.@"prime-fw" += 1;
             continue;
         }
         if (std.mem.eql(u8, arg, "--stdout")) {
-            output_stdout = true;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--config")) {
-            const value = args.next() orelse return error.InvalidArgument;
-            applyConfigKV(value, &samplerate_hz, &samplerate_set) catch return error.InvalidArgument;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--samples")) {
-            const value = args.next() orelse return error.InvalidArgument;
-            sample_bytes = std.fmt.parseInt(usize, value, 10) catch return error.InvalidArgument;
-            if (sample_bytes == 0) return error.InvalidArgument;
-            samples_set = true;
+            parsed.stdout += 1;
             continue;
         }
         if (std.mem.eql(u8, arg, "--decode-cross")) {
-            decode_cross = true;
+            parsed.@"decode-cross" += 1;
             continue;
         }
+
+        if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output-file")) {
+            i += 1;
+            if (i >= cli_args.len) return error.InvalidArgument;
+            try parsed.@"output-file".append(allocator, cli_args[i]);
+            continue;
+        }
+
+        if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--config")) {
+            i += 1;
+            if (i >= cli_args.len) return error.InvalidArgument;
+            try parsed.config.append(allocator, cli_args[i]);
+            continue;
+        }
+
+        if (std.mem.eql(u8, arg, "--samples")) {
+            i += 1;
+            if (i >= cli_args.len) return error.InvalidArgument;
+            const sample_value = std.fmt.parseInt(usize, cli_args[i], 10) catch return error.InvalidArgument;
+            try parsed.samples.append(allocator, sample_value);
+            continue;
+        }
+
         if (std.mem.eql(u8, arg, "--op-mode")) {
-            const value = args.next() orelse return error.InvalidArgument;
-            op_mode = parseOpMode(value) orelse return error.InvalidArgument;
-            op_mode_set = true;
+            i += 1;
+            if (i >= cli_args.len) return error.InvalidArgument;
+            try parsed.@"op-mode".append(allocator, cli_args[i]);
             continue;
         }
+
         if (std.mem.eql(u8, arg, "--samplerate")) {
-            const value = args.next() orelse return error.InvalidArgument;
-            samplerate_hz = parseSamplerate(value) orelse return error.InvalidArgument;
-            samplerate_set = true;
+            i += 1;
+            if (i >= cli_args.len) return error.InvalidArgument;
+            const samplerate_value = std.fmt.parseInt(u64, cli_args[i], 10) catch return error.InvalidArgument;
+            try parsed.samplerate.append(allocator, samplerate_value);
             continue;
         }
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            try printUsage(stdout);
-            return error.ShowHelp;
-        }
+
         return error.InvalidArgument;
+    }
+
+    return commandFromParsedArgs(parsed.view());
+}
+
+fn commandFromParsedArgs(parsed_args: anytype) !Command {
+    if (@field(parsed_args, "help") > 0) return error.ShowHelp;
+
+    const scan_count = @field(parsed_args, "scan");
+    const prime_fw_count = @field(parsed_args, "prime-fw");
+    if (scan_count > 0 and prime_fw_count > 0) return error.InvalidArgument;
+
+    var requested_read_only: ?enum { scan, prime_fw } = null;
+    if (scan_count > 0) requested_read_only = .scan;
+    if (prime_fw_count > 0) requested_read_only = .prime_fw;
+
+    const output_paths: []const []const u8 = @field(parsed_args, "output-file");
+    const output_path = lastValue([]const u8, output_paths);
+    if (output_path != null and output_path.?.len == 0) return error.InvalidArgument;
+    const output_stdout = @field(parsed_args, "stdout") > 0;
+
+    var samplerate_hz: u64 = usb.DEFAULT_CAPTURE_SAMPLERATE_HZ;
+    var samplerate_set = false;
+    const config_values: []const []const u8 = @field(parsed_args, "config");
+    for (config_values) |value| {
+        applyConfigKV(value, &samplerate_hz, &samplerate_set) catch return error.InvalidArgument;
+    }
+
+    var sample_bytes: usize = default_capture_samples_bytes;
+    var samples_set = false;
+    const sample_values: []const usize = @field(parsed_args, "samples");
+    if (lastValue(usize, sample_values)) |value| {
+        if (value == 0) return error.InvalidArgument;
+        sample_bytes = value;
+        samples_set = true;
+    }
+
+    const decode_cross = @field(parsed_args, "decode-cross") > 0;
+
+    var op_mode: usb.OperationMode = .buffer;
+    var op_mode_set = false;
+    const op_mode_values: []const []const u8 = @field(parsed_args, "op-mode");
+    if (lastValue([]const u8, op_mode_values)) |value| {
+        op_mode = parseOpMode(value) orelse return error.InvalidArgument;
+        op_mode_set = true;
+    }
+
+    const samplerate_values: []const u64 = @field(parsed_args, "samplerate");
+    if (lastValue(u64, samplerate_values)) |value| {
+        samplerate_hz = parseSamplerateValue(value) orelse return error.InvalidArgument;
+        samplerate_set = true;
     }
 
     const capture_requested = output_path != null or output_stdout or samples_set or decode_cross or op_mode_set or samplerate_set;
@@ -146,6 +324,11 @@ fn parseArgs() !Command {
         op_mode,
         samplerate_hz,
     ) };
+}
+
+fn lastValue(comptime T: type, values: []const T) ?T {
+    if (values.len == 0) return null;
+    return values[values.len - 1];
 }
 
 fn buildCaptureCommand(
@@ -182,6 +365,34 @@ fn buildCaptureCommand(
     }
 
     return error.InvalidArgument;
+}
+
+fn detachOutputPathIfNeeded(cmd: *Command, allocator: std.mem.Allocator) !void {
+    switch (cmd.*) {
+        .capture => |*capture_cmd| switch (capture_cmd.output_target) {
+            .file_path => |path| {
+                const owned = try allocator.dupe(u8, path);
+                capture_cmd.output_target = .{ .file_path = owned };
+                capture_cmd.owns_output_path = true;
+            },
+            .stdout => {},
+        },
+        else => {},
+    }
+}
+
+fn deinitCommand(cmd: *Command, allocator: std.mem.Allocator) void {
+    switch (cmd.*) {
+        .capture => |*capture_cmd| {
+            if (!capture_cmd.owns_output_path) return;
+            switch (capture_cmd.output_target) {
+                .file_path => |path| allocator.free(path),
+                .stdout => {},
+            }
+            capture_cmd.owns_output_path = false;
+        },
+        else => {},
+    }
 }
 
 fn printUsage(writer: anytype) !void {
@@ -347,6 +558,10 @@ fn parseOpMode(value: []const u8) ?usb.OperationMode {
 
 fn parseSamplerate(value: []const u8) ?u64 {
     const samplerate = std.fmt.parseInt(u64, value, 10) catch return null;
+    return parseSamplerateValue(samplerate);
+}
+
+fn parseSamplerateValue(samplerate: u64) ?u64 {
     if (!usb.isSupportedSamplerate(samplerate)) return null;
     return samplerate;
 }
@@ -538,6 +753,76 @@ test "modelLabelForIdentity matches PX Logic profiles" {
 test "modelLabelForIdentity returns null for unknown IDs" {
     try std.testing.expect(modelLabelForIdentity(0x046D, 0xC52B, c.LIBUSB_SPEED_HIGH, .unavailable) == null);
     try std.testing.expect(modelLabelForIdentity(0x0000, 0x0000, c.LIBUSB_SPEED_HIGH, .unavailable) == null);
+}
+
+test "parseArgsFromSlice parses stdout capture options" {
+    const argv = [_][]const u8{
+        "pxlobster",
+        "--stdout",
+        "--samples",
+        "65536",
+        "--op-mode",
+        "stream",
+        "--samplerate",
+        "24000000",
+    };
+
+    const cmd = try parseArgsFromSlice(&argv, std.testing.allocator);
+    switch (cmd) {
+        .capture => |capture_cmd| {
+            switch (capture_cmd.output_target) {
+                .stdout => {},
+                else => return error.TestExpectedEqual,
+            }
+            try std.testing.expectEqual(capture.OutputFormat.bin, capture_cmd.output_format);
+            try std.testing.expectEqual(@as(usize, 65_536), capture_cmd.sample_bytes);
+            try std.testing.expectEqual(usb.OperationMode.stream, capture_cmd.op_mode);
+            try std.testing.expectEqual(@as(u64, 24_000_000), capture_cmd.samplerate_hz);
+        },
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "parseArgsFromSlice rejects stdout and output-file conflict" {
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "-o", "capture.bin" };
+    try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
+}
+
+test "parseArgsFromSlice rejects missing option values" {
+    const missing_output = [_][]const u8{ "pxlobster", "-o" };
+    try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&missing_output, std.testing.allocator));
+
+    const missing_samples = [_][]const u8{ "pxlobster", "--stdout", "--samples" };
+    try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&missing_samples, std.testing.allocator));
+}
+
+test "parseArgsFromSlice returns ShowHelp for --help" {
+    const argv = [_][]const u8{ "pxlobster", "--help" };
+    try std.testing.expectError(error.ShowHelp, parseArgsFromSlice(&argv, std.testing.allocator));
+}
+
+test "parseArgsFromSlice accepts samplerate from -c" {
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "-c", "samplerate=24M" };
+    const cmd = try parseArgsFromSlice(&argv, std.testing.allocator);
+    switch (cmd) {
+        .capture => |capture_cmd| try std.testing.expectEqual(@as(u64, 24_000_000), capture_cmd.samplerate_hz),
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "parseArgsFromSlice rejects invalid op-mode" {
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--op-mode", "invalid" };
+    try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
+}
+
+test "parseArgsFromSlice rejects unsupported samplerate" {
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--samplerate", "123456789" };
+    try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
+}
+
+test "parseArgsFromSlice keeps scan and capture mutually exclusive" {
+    const argv = [_][]const u8{ "pxlobster", "--scan", "--stdout" };
+    try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
 }
 
 test "parseOpMode accepts supported values" {

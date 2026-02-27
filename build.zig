@@ -63,6 +63,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const clap_dep = b.dependency("clap", .{});
 
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
@@ -103,6 +104,7 @@ pub fn build(b: *std.Build) void {
                 // importing modules from different packages).
                 .{ .name = "pxlobster", .module = mod },
                 .{ .name = "pxresources", .module = resources_mod },
+                .{ .name = "clap", .module = clap_dep.module("clap") },
             },
         }),
     });
