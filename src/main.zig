@@ -215,6 +215,7 @@ fn runCapture(cmd: args.CaptureCommand, stdout: anytype, stderr: anytype) !void 
             .output_format = output_format,
             .sample_bytes = cmd.sample_bytes,
             .duration_ms = cmd.time_ms,
+            .strict_channel_count_probe = cmd.triggers_specified,
             .decode_cross = cmd.decode_cross,
             .capture_profile = .{
                 .op_mode = op_mode,

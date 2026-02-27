@@ -28,6 +28,7 @@ pub fn main() !void {
             if (capture_cmd.samplerate_hz != 24_000_000) return error.UnexpectedSamplerate;
             if (capture_cmd.trigger_one != 0x1) return error.UnexpectedTriggerOneMask;
             if (capture_cmd.trigger_rise != 0x2) return error.UnexpectedTriggerRiseMask;
+            if (!capture_cmd.triggers_specified) return error.ExpectedTriggersSpecified;
         },
         else => return error.ExpectedCaptureCommand,
     }
@@ -39,6 +40,7 @@ pub fn main() !void {
         .capture => |capture_cmd| {
             if (capture_cmd.trigger_fall != (1 << 2)) return error.UnexpectedTriggerFallMask;
             if (capture_cmd.trigger_zero != (1 << 3)) return error.UnexpectedTriggerZeroMask;
+            if (!capture_cmd.triggers_specified) return error.ExpectedTriggersSpecified;
         },
         else => return error.ExpectedCaptureCommand,
     }
@@ -51,6 +53,7 @@ pub fn main() !void {
             if (capture_cmd.time_ms == null or capture_cmd.time_ms.? != 100) return error.UnexpectedTimeValue;
             if (capture_cmd.sample_bytes != 0) return error.UnexpectedSampleBytes;
             if (capture_cmd.samplerate_hz != 10_000_000) return error.UnexpectedSamplerate;
+            if (capture_cmd.triggers_specified) return error.UnexpectedTriggersSpecified;
         },
         else => return error.ExpectedCaptureCommand,
     }

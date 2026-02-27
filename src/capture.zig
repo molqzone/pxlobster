@@ -23,6 +23,7 @@ pub const CaptureOptions = struct {
     output_target: CaptureOutputTarget,
     sample_bytes: usize,
     duration_ms: ?u64 = null,
+    strict_channel_count_probe: bool = false,
     output_format: OutputFormat = .bin,
     decode_cross: bool = false,
     capture_profile: usb.CaptureProfile = .{},
@@ -156,6 +157,10 @@ fn validateTriggerMasksForChannelCount(profile: usb.CaptureProfile, channel_coun
     if ((profile.trigger_fall & invalid_bits) != 0) return error.InvalidTriggerChannel;
 }
 
+fn requiresStrictChannelCountProbe(options: CaptureOptions) bool {
+    return options.duration_ms != null or options.strict_channel_count_probe;
+}
+
 pub fn runCapture(
     allocator: std.mem.Allocator,
     ctx: *c.libusb_context,
@@ -188,7 +193,7 @@ pub fn runCapture(
     try usb.claimInterface(handle, 1);
     defer usb.releaseInterface(handle, 1);
 
-    const capture_channel_count = if (options.duration_ms != null)
+    const capture_channel_count = if (requiresStrictChannelCountProbe(options))
         try detectCaptureChannelCountStrict(handle, opened.vid, opened.pid)
     else
         detectCaptureChannelCount(handle, opened.vid, opened.pid);
@@ -678,6 +683,29 @@ test "resolveTargetBytes accepts duration target with zero sample_bytes" {
         .capture_profile = .{ .op_mode = .buffer, .samplerate_hz = 24_000_000 },
     }, 16);
     try std.testing.expectEqual(@as(usize, 48_000), target);
+}
+
+test "requiresStrictChannelCountProbe is true for duration mode" {
+    try std.testing.expect(requiresStrictChannelCountProbe(.{
+        .output_target = .stdout,
+        .sample_bytes = 0,
+        .duration_ms = 1,
+    }));
+}
+
+test "requiresStrictChannelCountProbe is true for explicit trigger mode" {
+    try std.testing.expect(requiresStrictChannelCountProbe(.{
+        .output_target = .stdout,
+        .sample_bytes = 4096,
+        .strict_channel_count_probe = true,
+    }));
+}
+
+test "requiresStrictChannelCountProbe is false for default capture mode" {
+    try std.testing.expect(!requiresStrictChannelCountProbe(.{
+        .output_target = .stdout,
+        .sample_bytes = 4096,
+    }));
 }
 
 test "validateTriggerMasksForChannelCount accepts masks within channel range" {

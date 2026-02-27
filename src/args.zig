@@ -42,6 +42,7 @@ pub const CaptureCommand = struct {
     trigger_one: u32 = 0,
     trigger_rise: u32 = 0,
     trigger_fall: u32 = 0,
+    triggers_specified: bool = false,
     owns_output_path: bool = false,
 };
 
@@ -358,6 +359,7 @@ fn commandFromParsedArgs(parsed_args: anytype) !Command {
         op_mode,
         samplerate_hz,
         trigger_masks,
+        triggers_set,
     ) };
 }
 
@@ -375,6 +377,7 @@ fn buildCaptureCommand(
     op_mode: OperationMode,
     samplerate_hz: u64,
     trigger_masks: TriggerMasks,
+    triggers_specified: bool,
 ) !CaptureCommand {
     if (output_stdout and output_path != null) return error.InvalidArgument;
 
@@ -391,6 +394,7 @@ fn buildCaptureCommand(
             .trigger_one = trigger_masks.trigger_one,
             .trigger_rise = trigger_masks.trigger_rise,
             .trigger_fall = trigger_masks.trigger_fall,
+            .triggers_specified = triggers_specified,
         };
     }
 
@@ -408,6 +412,7 @@ fn buildCaptureCommand(
             .trigger_one = trigger_masks.trigger_one,
             .trigger_rise = trigger_masks.trigger_rise,
             .trigger_fall = trigger_masks.trigger_fall,
+            .triggers_specified = triggers_specified,
         };
     }
 
@@ -572,6 +577,7 @@ test "parseArgsFromSlice parses stdout capture options" {
             try std.testing.expectEqual(@as(u32, 1 << 0), capture_cmd.trigger_one);
             try std.testing.expectEqual(@as(u32, 1 << 1), capture_cmd.trigger_rise);
             try std.testing.expectEqual(@as(u32, 1 << 2), capture_cmd.trigger_fall);
+            try std.testing.expect(capture_cmd.triggers_specified);
         },
         else => return error.TestExpectedEqual,
     }
@@ -584,7 +590,17 @@ test "parseArgsFromSlice accepts short -t trigger option" {
         .capture => |capture_cmd| {
             try std.testing.expectEqual(@as(u32, 1 << 2), capture_cmd.trigger_fall);
             try std.testing.expectEqual(@as(u32, 1 << 3), capture_cmd.trigger_zero);
+            try std.testing.expect(capture_cmd.triggers_specified);
         },
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "parseArgsFromSlice leaves triggers_specified false by default" {
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--samples", "1024" };
+    const cmd = try parseArgsFromSlice(&argv, std.testing.allocator);
+    switch (cmd) {
+        .capture => |capture_cmd| try std.testing.expect(!capture_cmd.triggers_specified),
         else => return error.TestExpectedEqual,
     }
 }
@@ -736,7 +752,7 @@ test "buildCaptureCommand selects stdout raw output" {
         .trigger_one = 0xB,
         .trigger_rise = 0xC,
         .trigger_fall = 0xD,
-    });
+    }, true);
     try std.testing.expectEqual(OutputFormat.bin, cmd.output_format);
     try std.testing.expectEqual(@as(usize, 4096), cmd.sample_bytes);
     try std.testing.expectEqual(@as(?u64, null), cmd.time_ms);
@@ -747,6 +763,7 @@ test "buildCaptureCommand selects stdout raw output" {
     try std.testing.expectEqual(@as(u32, 0xB), cmd.trigger_one);
     try std.testing.expectEqual(@as(u32, 0xC), cmd.trigger_rise);
     try std.testing.expectEqual(@as(u32, 0xD), cmd.trigger_fall);
+    try std.testing.expect(cmd.triggers_specified);
     switch (cmd.output_target) {
         .stdout => {},
         else => return error.TestExpectedEqual,
@@ -756,14 +773,15 @@ test "buildCaptureCommand selects stdout raw output" {
 test "buildCaptureCommand rejects stdout and output-file conflict" {
     try std.testing.expectError(
         error.InvalidArgument,
-        buildCaptureCommand("capture.bin", true, 1024, null, false, .buffer, default_capture_samplerate_hz, .{}),
+        buildCaptureCommand("capture.bin", true, 1024, null, false, .buffer, default_capture_samplerate_hz, .{}, false),
     );
 }
 
 test "buildCaptureCommand enables decode-cross for sr file output" {
-    const cmd = try buildCaptureCommand("capture.sr", false, 2048, null, false, .buffer, default_capture_samplerate_hz, .{});
+    const cmd = try buildCaptureCommand("capture.sr", false, 2048, null, false, .buffer, default_capture_samplerate_hz, .{}, false);
     try std.testing.expectEqual(OutputFormat.sr, cmd.output_format);
     try std.testing.expect(cmd.decode_cross);
+    try std.testing.expect(!cmd.triggers_specified);
     switch (cmd.output_target) {
         .file_path => |path| try std.testing.expectEqualStrings("capture.sr", path),
         else => return error.TestExpectedEqual,
@@ -771,7 +789,7 @@ test "buildCaptureCommand enables decode-cross for sr file output" {
 }
 
 test "buildCaptureCommand preserves time option" {
-    const cmd = try buildCaptureCommand("capture.bin", false, 0, 150, false, .buffer, 24_000_000, .{});
+    const cmd = try buildCaptureCommand("capture.bin", false, 0, 150, false, .buffer, 24_000_000, .{}, false);
     try std.testing.expectEqual(@as(?u64, 150), cmd.time_ms);
     try std.testing.expectEqual(@as(usize, 0), cmd.sample_bytes);
 }
