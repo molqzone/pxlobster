@@ -57,6 +57,40 @@ const TransferSlot = struct {
     callback_ctx: CallbackContext = undefined,
 };
 
+const DefaultTransferOps = struct {
+    fn allocTransfer(_: @This()) ?*c.libusb_transfer {
+        return c.libusb_alloc_transfer(0);
+    }
+
+    fn freeTransfer(_: @This(), transfer: *c.libusb_transfer) void {
+        c.libusb_free_transfer(transfer);
+    }
+
+    fn fillTransfer(
+        _: @This(),
+        transfer: *c.libusb_transfer,
+        handle: *c.libusb_device_handle,
+        endpoint: u8,
+        buffer: []u8,
+        callback_ctx: *CallbackContext,
+    ) void {
+        c.libusb_fill_bulk_transfer(
+            transfer,
+            handle,
+            endpoint,
+            @ptrCast(buffer.ptr),
+            @intCast(buffer.len),
+            transferCallback,
+            @ptrCast(callback_ctx),
+            0,
+        );
+    }
+
+    fn submitTransfer(_: @This(), transfer: *c.libusb_transfer) c_int {
+        return c.libusb_submit_transfer(transfer);
+    }
+};
+
 const OpenedCaptureDevice = struct {
     handle: *c.libusb_device_handle,
     vid: u16,
@@ -148,6 +182,40 @@ fn resolveTargetBytes(options: CaptureOptions, channel_count: u32) !usize {
     return options.sample_bytes;
 }
 
+fn initializeTransferSlot(
+    allocator: std.mem.Allocator,
+    slot: *TransferSlot,
+    transfer_size: usize,
+    handle: *c.libusb_device_handle,
+    shared: *SharedState,
+    transfer_ops: anytype,
+) !void {
+    slot.buffer = try allocator.alloc(u8, transfer_size);
+    errdefer if (slot.buffer) |buffer| {
+        allocator.free(buffer);
+        slot.buffer = null;
+    };
+
+    const transfer = transfer_ops.allocTransfer() orelse return error.LibusbAllocTransferFailed;
+    slot.transfer = transfer;
+    errdefer if (slot.transfer) |owned_transfer| {
+        transfer_ops.freeTransfer(owned_transfer);
+        slot.transfer = null;
+    };
+    slot.callback_ctx = .{ .shared = shared };
+
+    transfer_ops.fillTransfer(
+        transfer,
+        handle,
+        usb.BULK_EP_DATA_IN,
+        slot.buffer.?,
+        &slot.callback_ctx,
+    );
+
+    const submit_rc = transfer_ops.submitTransfer(transfer);
+    if (submit_rc != 0) return error.LibusbSubmitTransferFailed;
+}
+
 fn validateTriggerMasksForChannelCount(profile: usb.CaptureProfile, channel_count: u32) !void {
     const channel_mask = try usb.captureChannelMask(channel_count);
     const invalid_bits: u32 = ~channel_mask;
@@ -184,7 +252,7 @@ pub fn runCapture(
         .first_failure_status = std.atomic.Value(u32).init(no_failure_status),
     };
 
-    const opened = try openFirstSupportedDevice(ctx);
+    const opened = try openFirstSupportedDevice(allocator, ctx);
     const handle = opened.handle;
     defer usb.closeDevice(handle);
 
@@ -276,35 +344,17 @@ pub fn runCapture(
         }
     }
 
+    const transfer_ops = DefaultTransferOps{};
     while (initialized < slots.len) : (initialized += 1) {
-        var slot = &slots[initialized];
-        slot.buffer = try allocator.alloc(u8, options.transfer_size);
-        errdefer if (slot.buffer) |buffer| {
-            allocator.free(buffer);
-            slot.buffer = null;
-        };
-
-        const transfer = c.libusb_alloc_transfer(0) orelse return error.LibusbAllocTransferFailed;
-        slot.transfer = transfer;
-        errdefer if (slot.transfer) |owned_transfer| {
-            c.libusb_free_transfer(owned_transfer);
-            slot.transfer = null;
-        };
-        slot.callback_ctx = .{ .shared = &shared };
-
-        c.libusb_fill_bulk_transfer(
-            transfer,
+        const slot = &slots[initialized];
+        try initializeTransferSlot(
+            allocator,
+            slot,
+            options.transfer_size,
             handle,
-            usb.BULK_EP_DATA_IN,
-            @ptrCast(slot.buffer.?.ptr),
-            @intCast(slot.buffer.?.len),
-            transferCallback,
-            @ptrCast(&slot.callback_ctx),
-            0,
+            &shared,
+            transfer_ops,
         );
-
-        const submit_rc = c.libusb_submit_transfer(transfer);
-        if (submit_rc != 0) return error.LibusbSubmitTransferFailed;
         _ = shared.active_submissions.fetchAdd(1, .acq_rel);
     }
 
@@ -503,21 +553,21 @@ fn drainTransfers(ctx: *c.libusb_context, slots: []TransferSlot, shared: *Shared
     shared.producer_done.store(true, .release);
 }
 
-fn openFirstSupportedDevice(ctx: *c.libusb_context) !OpenedCaptureDevice {
+fn openFirstSupportedDevice(allocator: std.mem.Allocator, ctx: *c.libusb_context) !OpenedCaptureDevice {
     var device_list: [*c]?*c.libusb_device = undefined;
     const count = c.libusb_get_device_list(ctx, &device_list);
     if (count < 0) return error.LibusbGetDeviceListFailed;
     defer c.libusb_free_device_list(device_list, 1);
 
     var candidates: std.ArrayList(CandidateSlot) = .empty;
-    defer candidates.deinit(std.heap.page_allocator);
+    defer candidates.deinit(allocator);
 
     const count_usize: usize = @intCast(count);
     const device_slice = @as([*]?*c.libusb_device, @ptrCast(device_list))[0..count_usize];
     for (device_slice) |dev_opt| {
         if (dev_opt == null) continue;
         const snapshot = usb.snapshotFromDevice(dev_opt.?) orelse continue;
-        try candidates.append(std.heap.page_allocator, .{
+        try candidates.append(allocator, .{
             .snapshot = snapshot,
             .dev = dev_opt.?,
         });
@@ -819,4 +869,139 @@ test "pushTransferPayload tracks only bytes accepted by ringbuffer" {
     pushTransferPayload(&shared, second[0..]);
     try std.testing.expectEqual(@as(u64, 4), shared.bytes_in.load(.acquire));
     try std.testing.expectEqual(@as(u64, 2), rb.dropped());
+}
+
+test "initializeTransferSlot frees buffer when transfer allocation fails" {
+    var rb = try ringbuffer.RingBuffer.init(std.testing.allocator, 16);
+    defer rb.deinit();
+
+    var shared = SharedState{
+        .ring = &rb,
+        .stop_requested = std.atomic.Value(bool).init(false),
+        .producer_done = std.atomic.Value(bool).init(false),
+        .active_submissions = std.atomic.Value(u32).init(0),
+        .bytes_in = std.atomic.Value(u64).init(0),
+        .transfer_failed = std.atomic.Value(bool).init(false),
+        .first_failure_status = std.atomic.Value(u32).init(no_failure_status),
+    };
+    var slot: TransferSlot = .{};
+    const fake_handle: *c.libusb_device_handle = @ptrFromInt(0x1000);
+
+    var free_calls: usize = 0;
+    var fill_calls: usize = 0;
+    var submit_calls: usize = 0;
+    const FailingAllocOps = struct {
+        free_calls: *usize,
+        fill_calls: *usize,
+        submit_calls: *usize,
+
+        fn allocTransfer(_: *@This()) ?*c.libusb_transfer {
+            return null;
+        }
+
+        fn freeTransfer(self: *@This(), _: *c.libusb_transfer) void {
+            self.free_calls.* += 1;
+        }
+
+        fn fillTransfer(
+            self: *@This(),
+            _: *c.libusb_transfer,
+            _: *c.libusb_device_handle,
+            _: u8,
+            _: []u8,
+            _: *CallbackContext,
+        ) void {
+            self.fill_calls.* += 1;
+        }
+
+        fn submitTransfer(self: *@This(), _: *c.libusb_transfer) c_int {
+            self.submit_calls.* += 1;
+            return 0;
+        }
+    };
+    var ops = FailingAllocOps{
+        .free_calls = &free_calls,
+        .fill_calls = &fill_calls,
+        .submit_calls = &submit_calls,
+    };
+
+    try std.testing.expectError(
+        error.LibusbAllocTransferFailed,
+        initializeTransferSlot(std.testing.allocator, &slot, 1024, fake_handle, &shared, &ops),
+    );
+    try std.testing.expect(slot.buffer == null);
+    try std.testing.expect(slot.transfer == null);
+    try std.testing.expectEqual(@as(usize, 0), free_calls);
+    try std.testing.expectEqual(@as(usize, 0), fill_calls);
+    try std.testing.expectEqual(@as(usize, 0), submit_calls);
+}
+
+test "initializeTransferSlot frees slot resources when transfer submit fails" {
+    var rb = try ringbuffer.RingBuffer.init(std.testing.allocator, 16);
+    defer rb.deinit();
+
+    var shared = SharedState{
+        .ring = &rb,
+        .stop_requested = std.atomic.Value(bool).init(false),
+        .producer_done = std.atomic.Value(bool).init(false),
+        .active_submissions = std.atomic.Value(u32).init(0),
+        .bytes_in = std.atomic.Value(u64).init(0),
+        .transfer_failed = std.atomic.Value(bool).init(false),
+        .first_failure_status = std.atomic.Value(u32).init(no_failure_status),
+    };
+    var slot: TransferSlot = .{};
+    const fake_handle: *c.libusb_device_handle = @ptrFromInt(0x1000);
+    const fake_transfer: *c.libusb_transfer = @ptrFromInt(0x2000);
+
+    var free_calls: usize = 0;
+    var fill_calls: usize = 0;
+    var submit_calls: usize = 0;
+    const FailingSubmitOps = struct {
+        free_calls: *usize,
+        fill_calls: *usize,
+        submit_calls: *usize,
+        fake_transfer: *c.libusb_transfer,
+
+        fn allocTransfer(self: *@This()) ?*c.libusb_transfer {
+            return self.fake_transfer;
+        }
+
+        fn freeTransfer(self: *@This(), transfer: *c.libusb_transfer) void {
+            if (transfer == self.fake_transfer) {
+                self.free_calls.* += 1;
+            }
+        }
+
+        fn fillTransfer(
+            self: *@This(),
+            _: *c.libusb_transfer,
+            _: *c.libusb_device_handle,
+            _: u8,
+            _: []u8,
+            _: *CallbackContext,
+        ) void {
+            self.fill_calls.* += 1;
+        }
+
+        fn submitTransfer(self: *@This(), _: *c.libusb_transfer) c_int {
+            self.submit_calls.* += 1;
+            return -1;
+        }
+    };
+    var ops = FailingSubmitOps{
+        .free_calls = &free_calls,
+        .fill_calls = &fill_calls,
+        .submit_calls = &submit_calls,
+        .fake_transfer = fake_transfer,
+    };
+
+    try std.testing.expectError(
+        error.LibusbSubmitTransferFailed,
+        initializeTransferSlot(std.testing.allocator, &slot, 1024, fake_handle, &shared, &ops),
+    );
+    try std.testing.expect(slot.buffer == null);
+    try std.testing.expect(slot.transfer == null);
+    try std.testing.expectEqual(@as(usize, 1), fill_calls);
+    try std.testing.expectEqual(@as(usize, 1), submit_calls);
+    try std.testing.expectEqual(@as(usize, 1), free_calls);
 }

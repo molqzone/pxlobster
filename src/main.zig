@@ -44,7 +44,7 @@ pub fn main() !void {
         },
         else => return err,
     };
-    defer args.deinitCommand(&parsed.command, std.heap.page_allocator);
+    defer args.deinitParsedCommand(&parsed, std.heap.page_allocator);
 
     switch (parsed.command) {
         .scan => try scanUsbDevices(stdout, stderr, parsed.verbose),

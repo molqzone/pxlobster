@@ -157,6 +157,10 @@ pub fn parseArgsFromSlice(args: []const []const u8, allocator: std.mem.Allocator
     return parsed;
 }
 
+pub fn deinitParsedCommand(parsed: *ParsedCommand, allocator: std.mem.Allocator) void {
+    deinitCommand(&parsed.command, allocator);
+}
+
 pub fn deinitCommand(cmd: *Command, allocator: std.mem.Allocator) void {
     switch (cmd.*) {
         .capture => |*capture_cmd| {
