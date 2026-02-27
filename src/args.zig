@@ -134,19 +134,11 @@ const ParsedArgsOwned = struct {
     }
 };
 
-pub fn parseArgs() !Command {
-    return (try parseArgsWithVerbose()).command;
-}
-
-pub fn parseArgsWithVerbose() !ParsedCommand {
+pub fn parseArgs() !ParsedCommand {
     return parseArgsWithClap();
 }
 
-pub fn parseArgsFromSlice(args: []const []const u8, allocator: std.mem.Allocator) !Command {
-    return (try parseArgsFromSliceWithVerbose(args, allocator)).command;
-}
-
-pub fn parseArgsFromSliceWithVerbose(args: []const []const u8, allocator: std.mem.Allocator) !ParsedCommand {
+pub fn parseArgsFromSlice(args: []const []const u8, allocator: std.mem.Allocator) !ParsedCommand {
     if (comptime builtin.is_test) {
         return parseArgsFromSliceWithoutClap(args, allocator);
     }
@@ -589,8 +581,8 @@ test "parseArgsFromSlice parses stdout capture options" {
         "24000000",
     };
 
-    const cmd = try parseArgsFromSlice(&argv, std.testing.allocator);
-    switch (cmd) {
+    const parsed = try parseArgsFromSlice(&argv, std.testing.allocator);
+    switch (parsed.command) {
         .capture => |capture_cmd| {
             switch (capture_cmd.output_target) {
                 .stdout => {},
@@ -613,8 +605,8 @@ test "parseArgsFromSlice parses stdout capture options" {
 
 test "parseArgsFromSlice accepts short -t trigger option" {
     const argv = [_][]const u8{ "pxlobster", "--stdout", "-t", "2=f,3=0" };
-    const cmd = try parseArgsFromSlice(&argv, std.testing.allocator);
-    switch (cmd) {
+    const parsed = try parseArgsFromSlice(&argv, std.testing.allocator);
+    switch (parsed.command) {
         .capture => |capture_cmd| {
             try std.testing.expectEqual(@as(u32, 1 << 2), capture_cmd.trigger_fall);
             try std.testing.expectEqual(@as(u32, 1 << 3), capture_cmd.trigger_zero);
@@ -626,8 +618,8 @@ test "parseArgsFromSlice accepts short -t trigger option" {
 
 test "parseArgsFromSlice leaves triggers_specified false by default" {
     const argv = [_][]const u8{ "pxlobster", "--stdout", "--samples", "1024" };
-    const cmd = try parseArgsFromSlice(&argv, std.testing.allocator);
-    switch (cmd) {
+    const parsed = try parseArgsFromSlice(&argv, std.testing.allocator);
+    switch (parsed.command) {
         .capture => |capture_cmd| {
             try std.testing.expect(!capture_cmd.triggers_specified);
         },
@@ -637,7 +629,7 @@ test "parseArgsFromSlice leaves triggers_specified false by default" {
 
 test "parseArgsFromSlice enables verbose for capture and scan commands" {
     const capture_argv = [_][]const u8{ "pxlobster", "--stdout", "--samples", "1024", "-v" };
-    const capture_result = try parseArgsFromSliceWithVerbose(&capture_argv, std.testing.allocator);
+    const capture_result = try parseArgsFromSlice(&capture_argv, std.testing.allocator);
     switch (capture_result.command) {
         .capture => {},
         else => return error.TestExpectedEqual,
@@ -645,7 +637,7 @@ test "parseArgsFromSlice enables verbose for capture and scan commands" {
     try std.testing.expect(capture_result.verbose);
 
     const scan_argv = [_][]const u8{ "pxlobster", "--scan", "--verbose" };
-    const scan_result = try parseArgsFromSliceWithVerbose(&scan_argv, std.testing.allocator);
+    const scan_result = try parseArgsFromSlice(&scan_argv, std.testing.allocator);
     switch (scan_result.command) {
         .scan => {},
         else => return error.TestExpectedEqual,
@@ -673,8 +665,8 @@ test "parseArgsFromSlice returns ShowHelp for --help" {
 
 test "parseArgsFromSlice accepts samplerate from -c" {
     const argv = [_][]const u8{ "pxlobster", "--stdout", "-c", "samplerate=24M" };
-    const cmd = try parseArgsFromSlice(&argv, std.testing.allocator);
-    switch (cmd) {
+    const parsed = try parseArgsFromSlice(&argv, std.testing.allocator);
+    switch (parsed.command) {
         .capture => |capture_cmd| try std.testing.expectEqual(@as(u64, 24_000_000), capture_cmd.samplerate_hz),
         else => return error.TestExpectedEqual,
     }
@@ -697,8 +689,8 @@ test "parseArgsFromSlice rejects unsupported samplerate" {
 
 test "parseArgsFromSlice accepts capture time in milliseconds" {
     const argv = [_][]const u8{ "pxlobster", "--stdout", "--time", "250", "--samplerate", "10000000" };
-    const cmd = try parseArgsFromSlice(&argv, std.testing.allocator);
-    switch (cmd) {
+    const parsed = try parseArgsFromSlice(&argv, std.testing.allocator);
+    switch (parsed.command) {
         .capture => |capture_cmd| {
             try std.testing.expectEqual(@as(?u64, 250), capture_cmd.time_ms);
             try std.testing.expectEqual(@as(usize, 0), capture_cmd.sample_bytes);

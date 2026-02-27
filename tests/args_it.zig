@@ -14,9 +14,9 @@ pub fn main() !void {
         "--samplerate",
         "24000000",
     }, std.heap.page_allocator);
-    defer args.deinitCommand(&cmd, std.heap.page_allocator);
+    defer args.deinitCommand(&cmd.command, std.heap.page_allocator);
 
-    switch (cmd) {
+    switch (cmd.command) {
         .capture => |capture_cmd| {
             switch (capture_cmd.output_target) {
                 .stdout => {},
@@ -34,7 +34,7 @@ pub fn main() !void {
     }
 
     const short_trigger_argv = [_][]const u8{ "pxlobster", "--stdout", "-t", "2=f,3=0", "-v" };
-    var short_trigger_result = try args.parseArgsFromSliceWithVerbose(&short_trigger_argv, std.heap.page_allocator);
+    var short_trigger_result = try args.parseArgsFromSlice(&short_trigger_argv, std.heap.page_allocator);
     defer args.deinitCommand(&short_trigger_result.command, std.heap.page_allocator);
     if (!short_trigger_result.verbose) return error.ExpectedVerbose;
     switch (short_trigger_result.command) {
@@ -48,8 +48,8 @@ pub fn main() !void {
 
     const time_argv = [_][]const u8{ "pxlobster", "--stdout", "--time", "100", "--samplerate", "10000000" };
     var time_cmd = try args.parseArgsFromSlice(&time_argv, std.heap.page_allocator);
-    defer args.deinitCommand(&time_cmd, std.heap.page_allocator);
-    switch (time_cmd) {
+    defer args.deinitCommand(&time_cmd.command, std.heap.page_allocator);
+    switch (time_cmd.command) {
         .capture => |capture_cmd| {
             if (capture_cmd.time_ms == null or capture_cmd.time_ms.? != 100) return error.UnexpectedTimeValue;
             if (capture_cmd.sample_bytes != 0) return error.UnexpectedSampleBytes;
@@ -60,7 +60,7 @@ pub fn main() !void {
     }
 
     const scan_verbose_argv = [_][]const u8{ "pxlobster", "--scan", "--verbose" };
-    var scan_verbose_result = try args.parseArgsFromSliceWithVerbose(&scan_verbose_argv, std.heap.page_allocator);
+    var scan_verbose_result = try args.parseArgsFromSlice(&scan_verbose_argv, std.heap.page_allocator);
     defer args.deinitCommand(&scan_verbose_result.command, std.heap.page_allocator);
     if (!scan_verbose_result.verbose) return error.ExpectedVerbose;
     switch (scan_verbose_result.command) {
@@ -69,7 +69,7 @@ pub fn main() !void {
     }
 
     const prime_verbose_argv = [_][]const u8{ "pxlobster", "--prime-fw", "-v" };
-    var prime_verbose_result = try args.parseArgsFromSliceWithVerbose(&prime_verbose_argv, std.heap.page_allocator);
+    var prime_verbose_result = try args.parseArgsFromSlice(&prime_verbose_argv, std.heap.page_allocator);
     defer args.deinitCommand(&prime_verbose_result.command, std.heap.page_allocator);
     if (!prime_verbose_result.verbose) return error.ExpectedVerbose;
     switch (prime_verbose_result.command) {

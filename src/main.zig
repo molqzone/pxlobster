@@ -33,7 +33,7 @@ pub fn main() !void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
     const stderr = std.fs.File.stderr().deprecatedWriter();
 
-    var parsed = args.parseArgsWithVerbose() catch |err| switch (err) {
+    var parsed = args.parseArgs() catch |err| switch (err) {
         error.ShowHelp => {
             try printUsage(stdout);
             return;
