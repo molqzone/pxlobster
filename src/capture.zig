@@ -22,6 +22,7 @@ pub const CaptureOutputTarget = union(enum) {
 pub const CaptureOptions = struct {
     output_target: CaptureOutputTarget,
     sample_bytes: usize,
+    duration_ms: ?u64 = null,
     output_format: OutputFormat = .bin,
     decode_cross: bool = false,
     capture_profile: usb.CaptureProfile = .{},
@@ -109,12 +110,48 @@ fn captureRegisterTargetBytes(sample_bytes: usize, transfer_size: usize, op_mode
     return @intCast(sample_bytes);
 }
 
+fn targetBytesFromDurationMs(duration_ms: u64, samplerate_hz: u64, channel_count: u32, decode_cross: bool) !usize {
+    if (duration_ms == 0) return error.InvalidCaptureDuration;
+
+    const unitsize = try session.unitsizeForChannelCount(channel_count);
+    const duration_samples_numerator = std.math.mul(u128, @as(u128, samplerate_hz), @as(u128, duration_ms)) catch {
+        return error.CaptureDurationTooLarge;
+    };
+
+    var sample_count: u128 = (duration_samples_numerator + 999) / 1000;
+    if (sample_count == 0) sample_count = 1;
+
+    if (decode_cross) {
+        const aligned = std.math.add(u128, sample_count, 63) catch return error.CaptureDurationTooLarge;
+        sample_count = (aligned / 64) * 64;
+    }
+
+    const target_bytes_u128 = std.math.mul(u128, sample_count, @as(u128, unitsize)) catch {
+        return error.CaptureDurationTooLarge;
+    };
+    if (target_bytes_u128 == 0 or target_bytes_u128 > std.math.maxInt(usize)) {
+        return error.CaptureDurationTooLarge;
+    }
+
+    return @intCast(target_bytes_u128);
+}
+
+fn resolveTargetBytes(options: CaptureOptions, channel_count: u32) !usize {
+    if (options.duration_ms) |duration_ms| {
+        if (options.capture_profile.op_mode == .loop) return error.InvalidCaptureDurationMode;
+        if (options.sample_bytes != 0) return error.InvalidCaptureTargetSelection;
+        return targetBytesFromDurationMs(duration_ms, options.capture_profile.samplerate_hz, channel_count, options.decode_cross);
+    }
+
+    if (options.sample_bytes == 0) return error.InvalidSampleSize;
+    return options.sample_bytes;
+}
+
 pub fn runCapture(
     allocator: std.mem.Allocator,
     ctx: *c.libusb_context,
     options: CaptureOptions,
 ) !session.CaptureSessionStats {
-    if (options.sample_bytes == 0) return error.InvalidSampleSize;
     if (options.transfer_count == 0) return error.InvalidTransferCount;
     if (options.transfer_size == 0) return error.InvalidTransferSize;
     if (options.transfer_size > std.math.maxInt(u32)) return error.TransferSizeTooLarge;
@@ -142,10 +179,14 @@ pub fn runCapture(
     try usb.claimInterface(handle, 1);
     defer usb.releaseInterface(handle, 1);
 
-    const capture_channel_count = detectCaptureChannelCount(handle, opened.vid, opened.pid);
+    const capture_channel_count = if (options.duration_ms != null)
+        try detectCaptureChannelCountStrict(handle, opened.vid, opened.pid)
+    else
+        detectCaptureChannelCount(handle, opened.vid, opened.pid);
+    const target_bytes = try resolveTargetBytes(options, capture_channel_count);
     if (options.decode_cross) {
         const stripe_bytes = @as(usize, @intCast(capture_channel_count)) * @sizeOf(u64);
-        if (stripe_bytes == 0 or options.sample_bytes % stripe_bytes != 0) {
+        if (stripe_bytes == 0 or target_bytes % stripe_bytes != 0) {
             return error.InvalidDecodeSampleSize;
         }
     }
@@ -192,7 +233,7 @@ pub fn runCapture(
     defer loop_signal_guard.restore();
 
     const register_target_bytes = captureRegisterTargetBytes(
-        options.sample_bytes,
+        target_bytes,
         options.transfer_size,
         options.capture_profile.op_mode,
     );
@@ -247,7 +288,7 @@ pub fn runCapture(
     var writer_ctx = stream.RawWriterContext{
         .ring = &ring,
         .file = output_file,
-        .target_bytes = options.sample_bytes,
+        .target_bytes = target_bytes,
         .continuous = loop_mode,
         .decode_cross = options.decode_cross,
         .channel_count = capture_channel_count,
@@ -278,7 +319,7 @@ pub fn runCapture(
 
         const bytes_out_now = writer_ctx.bytes_written.load(.acquire);
         const bytes_in_now = shared.bytes_in.load(.acquire);
-        if (!loop_mode and (bytes_out_now >= options.sample_bytes or bytes_in_now >= options.sample_bytes)) {
+        if (!loop_mode and (bytes_out_now >= target_bytes or bytes_in_now >= target_bytes)) {
             shared.stop_requested.store(true, .release);
         }
 
@@ -354,7 +395,7 @@ pub fn runCapture(
     }
 
     const bytes_out = writer_ctx.bytes_written.load(.acquire);
-    if (!loop_mode and bytes_out != options.sample_bytes) return error.CaptureIncomplete;
+    if (!loop_mode and bytes_out != target_bytes) return error.CaptureIncomplete;
 
     if (options.output_format == .sr) {
         const raw_path = temp_output_path orelse return error.OutputPathMissing;
@@ -545,6 +586,17 @@ fn detectCaptureChannelCount(handle: *c.libusb_device_handle, vid: u16, pid: u16
     return if (logic_mode == 0) 32 else 16;
 }
 
+fn detectCaptureChannelCountStrict(handle: *c.libusb_device_handle, vid: u16, pid: u16) !u32 {
+    if (device.isWchPxLogic(vid, pid)) return 32;
+    if (!device.isLegacyPxLogic(vid, pid)) return usb.DEFAULT_CAPTURE_CHANNEL_COUNT;
+
+    const logic_mode = usb.readRegister(handle, usb.REG_LOGIC_MODE, usb.DEFAULT_REGISTER_TIMEOUT_MS) catch {
+        return error.ChannelCountProbeFailed;
+    };
+
+    return if (logic_mode == 0) 32 else 16;
+}
+
 fn markTransferFailure(shared: *SharedState, status: u32) void {
     const first = shared.first_failure_status.load(.acquire);
     if (first == no_failure_status) {
@@ -574,6 +626,48 @@ test "captureRegisterTargetBytes uses max range for loop mode" {
     try std.testing.expectEqual(@as(u64, sample_bytes), captureRegisterTargetBytes(sample_bytes, transfer_size, .buffer));
     try std.testing.expectEqual(@as(u64, sample_bytes), captureRegisterTargetBytes(sample_bytes, transfer_size, .stream));
     try std.testing.expectEqual(std.math.maxInt(u64) - @as(u64, transfer_size), captureRegisterTargetBytes(sample_bytes, transfer_size, .loop));
+}
+
+test "targetBytesFromDurationMs converts milliseconds to byte target" {
+    const bytes_16ch = try targetBytesFromDurationMs(1, 24_000_000, 16, false);
+    try std.testing.expectEqual(@as(usize, 48_000), bytes_16ch);
+
+    const bytes_32ch = try targetBytesFromDurationMs(1, 24_000_000, 32, false);
+    try std.testing.expectEqual(@as(usize, 96_000), bytes_32ch);
+}
+
+test "targetBytesFromDurationMs aligns decode-cross to full cross stripes" {
+    // 25 MHz * 1 ms = 25_000 samples => rounded up to 25_024 for decode-cross.
+    const bytes_16ch = try targetBytesFromDurationMs(1, 25_000_000, 16, true);
+    try std.testing.expectEqual(@as(usize, 50_048), bytes_16ch);
+}
+
+test "resolveTargetBytes rejects duration with loop mode" {
+    try std.testing.expectError(error.InvalidCaptureDurationMode, resolveTargetBytes(.{
+        .output_target = .stdout,
+        .sample_bytes = 4096,
+        .duration_ms = 100,
+        .capture_profile = .{ .op_mode = .loop, .samplerate_hz = 24_000_000 },
+    }, 16));
+}
+
+test "resolveTargetBytes rejects simultaneous sample and duration targets" {
+    try std.testing.expectError(error.InvalidCaptureTargetSelection, resolveTargetBytes(.{
+        .output_target = .stdout,
+        .sample_bytes = 4096,
+        .duration_ms = 100,
+        .capture_profile = .{ .op_mode = .buffer, .samplerate_hz = 24_000_000 },
+    }, 16));
+}
+
+test "resolveTargetBytes accepts duration target with zero sample_bytes" {
+    const target = try resolveTargetBytes(.{
+        .output_target = .stdout,
+        .sample_bytes = 0,
+        .duration_ms = 1,
+        .capture_profile = .{ .op_mode = .buffer, .samplerate_hz = 24_000_000 },
+    }, 16);
+    try std.testing.expectEqual(@as(usize, 48_000), target);
 }
 
 test "visitCandidateIndexesByPriority follows supported ID order" {

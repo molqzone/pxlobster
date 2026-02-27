@@ -164,14 +164,35 @@ pub fn build(b: *std.Build) void {
     // A run step that will run the second test executable.
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
+    const capture_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/capture.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "pxlobster", .module = mod },
+            },
+        }),
+    });
+    configureLibUsb(b, capture_tests);
+    const run_capture_tests = b.addRunArtifact(capture_tests);
+
     const args_clap_integration = b.addExecutable(.{
         .name = "args_clap_integration",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/args_clap_integration.zig"),
+            .root_source_file = b.path("tests/args_it.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "clap", .module = clap_dep.module("clap") },
+                .{ .name = "args", .module = b.createModule(.{
+                    .root_source_file = b.path("src/args.zig"),
+                    .target = target,
+                    .optimize = optimize,
+                    .imports = &.{
+                        .{ .name = "clap", .module = clap_dep.module("clap") },
+                    },
+                }) },
             },
         }),
     });
@@ -183,6 +204,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+    test_step.dependOn(&run_capture_tests.step);
     test_step.dependOn(&run_args_clap_integration.step);
 
     // Just like flags, top level steps are also listed in the `--help` menu.

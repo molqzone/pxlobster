@@ -27,6 +27,7 @@ pub const CaptureCommand = struct {
     output_target: OutputTarget,
     output_format: OutputFormat = .bin,
     sample_bytes: usize = default_capture_samples_bytes,
+    time_ms: ?u64 = null,
     decode_cross: bool = false,
     op_mode: OperationMode = .buffer,
     samplerate_hz: u64 = default_capture_samplerate_hz,
@@ -47,6 +48,7 @@ const clap_params = if (builtin.is_test) 0 else clap.parseParamsComptime(
     \\    --stdout
     \\-c, --config <str>...
     \\    --samples <usize>...
+    \\    --time <u64>...
     \\    --decode-cross
     \\    --op-mode <str>...
     \\    --samplerate <u64>...
@@ -61,6 +63,7 @@ const ParsedArgsView = struct {
     stdout: usize,
     config: []const []const u8,
     samples: []const usize,
+    time: []const u64,
     @"decode-cross": usize,
     @"op-mode": []const []const u8,
     samplerate: []const u64,
@@ -74,6 +77,7 @@ const ParsedArgsOwned = struct {
     stdout: usize = 0,
     config: std.ArrayListUnmanaged([]const u8) = .{},
     samples: std.ArrayListUnmanaged(usize) = .{},
+    time: std.ArrayListUnmanaged(u64) = .{},
     @"decode-cross": usize = 0,
     @"op-mode": std.ArrayListUnmanaged([]const u8) = .{},
     samplerate: std.ArrayListUnmanaged(u64) = .{},
@@ -82,6 +86,7 @@ const ParsedArgsOwned = struct {
         self.@"output-file".deinit(allocator);
         self.config.deinit(allocator);
         self.samples.deinit(allocator);
+        self.time.deinit(allocator);
         self.@"op-mode".deinit(allocator);
         self.samplerate.deinit(allocator);
     }
@@ -95,6 +100,7 @@ const ParsedArgsOwned = struct {
             .stdout = self.stdout,
             .config = self.config.items,
             .samples = self.samples.items,
+            .time = self.time.items,
             .@"decode-cross" = self.@"decode-cross",
             .@"op-mode" = self.@"op-mode".items,
             .samplerate = self.samplerate.items,
@@ -213,6 +219,14 @@ fn parseArgsFromSliceWithoutClap(args: []const []const u8, allocator: std.mem.Al
             continue;
         }
 
+        if (std.mem.eql(u8, arg, "--time")) {
+            i += 1;
+            if (i >= cli_args.len) return error.InvalidArgument;
+            const time_value = std.fmt.parseInt(u64, cli_args[i], 10) catch return error.InvalidArgument;
+            try parsed.time.append(allocator, time_value);
+            continue;
+        }
+
         if (std.mem.eql(u8, arg, "--op-mode")) {
             i += 1;
             if (i >= cli_args.len) return error.InvalidArgument;
@@ -266,6 +280,17 @@ fn commandFromParsedArgs(parsed_args: anytype) !Command {
         samples_set = true;
     }
 
+    var time_ms: ?u64 = null;
+    var time_set = false;
+    const time_values: []const u64 = @field(parsed_args, "time");
+    if (lastValue(u64, time_values)) |value| {
+        if (value == 0) return error.InvalidArgument;
+        time_ms = value;
+        time_set = true;
+    }
+    if (samples_set and time_set) return error.InvalidArgument;
+    if (time_set) sample_bytes = 0;
+
     const decode_cross = @field(parsed_args, "decode-cross") > 0;
 
     var op_mode: OperationMode = .buffer;
@@ -275,6 +300,7 @@ fn commandFromParsedArgs(parsed_args: anytype) !Command {
         op_mode = parseOpMode(value) orelse return error.InvalidArgument;
         op_mode_set = true;
     }
+    if (time_set and op_mode == .loop) return error.InvalidArgument;
 
     const samplerate_values: []const u64 = @field(parsed_args, "samplerate");
     if (lastValue(u64, samplerate_values)) |value| {
@@ -282,7 +308,7 @@ fn commandFromParsedArgs(parsed_args: anytype) !Command {
         samplerate_set = true;
     }
 
-    const capture_requested = output_path != null or output_stdout or samples_set or decode_cross or op_mode_set or samplerate_set;
+    const capture_requested = output_path != null or output_stdout or samples_set or time_set or decode_cross or op_mode_set or samplerate_set;
     if (requested_read_only != null and capture_requested) return error.InvalidArgument;
 
     if (requested_read_only) |command| {
@@ -296,6 +322,7 @@ fn commandFromParsedArgs(parsed_args: anytype) !Command {
         output_path,
         output_stdout,
         sample_bytes,
+        time_ms,
         decode_cross,
         op_mode,
         samplerate_hz,
@@ -311,6 +338,7 @@ fn buildCaptureCommand(
     output_path: ?[]const u8,
     output_stdout: bool,
     sample_bytes: usize,
+    time_ms: ?u64,
     decode_cross: bool,
     op_mode: OperationMode,
     samplerate_hz: u64,
@@ -322,6 +350,7 @@ fn buildCaptureCommand(
             .output_target = .stdout,
             .output_format = .bin,
             .sample_bytes = sample_bytes,
+            .time_ms = time_ms,
             .decode_cross = decode_cross,
             .op_mode = op_mode,
             .samplerate_hz = samplerate_hz,
@@ -334,6 +363,7 @@ fn buildCaptureCommand(
             .output_target = .{ .file_path = path },
             .output_format = output_format,
             .sample_bytes = sample_bytes,
+            .time_ms = time_ms,
             .decode_cross = if (output_format == .sr) true else decode_cross,
             .op_mode = op_mode,
             .samplerate_hz = samplerate_hz,
@@ -451,6 +481,7 @@ test "parseArgsFromSlice parses stdout capture options" {
             }
             try std.testing.expectEqual(OutputFormat.bin, capture_cmd.output_format);
             try std.testing.expectEqual(@as(usize, 65_536), capture_cmd.sample_bytes);
+            try std.testing.expect(capture_cmd.time_ms == null);
             try std.testing.expectEqual(OperationMode.stream, capture_cmd.op_mode);
             try std.testing.expectEqual(@as(u64, 24_000_000), capture_cmd.samplerate_hz);
         },
@@ -492,6 +523,34 @@ test "parseArgsFromSlice rejects invalid op-mode" {
 
 test "parseArgsFromSlice rejects unsupported samplerate" {
     const argv = [_][]const u8{ "pxlobster", "--stdout", "--samplerate", "123456789" };
+    try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
+}
+
+test "parseArgsFromSlice accepts capture time in milliseconds" {
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--time", "250", "--samplerate", "10000000" };
+    const cmd = try parseArgsFromSlice(&argv, std.testing.allocator);
+    switch (cmd) {
+        .capture => |capture_cmd| {
+            try std.testing.expectEqual(@as(?u64, 250), capture_cmd.time_ms);
+            try std.testing.expectEqual(@as(usize, 0), capture_cmd.sample_bytes);
+            try std.testing.expectEqual(@as(u64, 10_000_000), capture_cmd.samplerate_hz);
+        },
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "parseArgsFromSlice rejects time and samples together" {
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--samples", "4096", "--time", "10" };
+    try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
+}
+
+test "parseArgsFromSlice rejects zero time" {
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--time", "0" };
+    try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
+}
+
+test "parseArgsFromSlice rejects loop mode with time" {
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--time", "10", "--op-mode", "loop" };
     try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
 }
 
@@ -542,9 +601,10 @@ test "inferOutputFormat auto-detects sr extension" {
 }
 
 test "buildCaptureCommand selects stdout raw output" {
-    const cmd = try buildCaptureCommand(null, true, 4096, true, .stream, 24_000_000);
+    const cmd = try buildCaptureCommand(null, true, 4096, null, true, .stream, 24_000_000);
     try std.testing.expectEqual(OutputFormat.bin, cmd.output_format);
     try std.testing.expectEqual(@as(usize, 4096), cmd.sample_bytes);
+    try std.testing.expectEqual(@as(?u64, null), cmd.time_ms);
     try std.testing.expectEqual(true, cmd.decode_cross);
     try std.testing.expectEqual(OperationMode.stream, cmd.op_mode);
     try std.testing.expectEqual(@as(u64, 24_000_000), cmd.samplerate_hz);
@@ -557,16 +617,22 @@ test "buildCaptureCommand selects stdout raw output" {
 test "buildCaptureCommand rejects stdout and output-file conflict" {
     try std.testing.expectError(
         error.InvalidArgument,
-        buildCaptureCommand("capture.bin", true, 1024, false, .buffer, default_capture_samplerate_hz),
+        buildCaptureCommand("capture.bin", true, 1024, null, false, .buffer, default_capture_samplerate_hz),
     );
 }
 
 test "buildCaptureCommand enables decode-cross for sr file output" {
-    const cmd = try buildCaptureCommand("capture.sr", false, 2048, false, .buffer, default_capture_samplerate_hz);
+    const cmd = try buildCaptureCommand("capture.sr", false, 2048, null, false, .buffer, default_capture_samplerate_hz);
     try std.testing.expectEqual(OutputFormat.sr, cmd.output_format);
     try std.testing.expect(cmd.decode_cross);
     switch (cmd.output_target) {
         .file_path => |path| try std.testing.expectEqualStrings("capture.sr", path),
         else => return error.TestExpectedEqual,
     }
+}
+
+test "buildCaptureCommand preserves time option" {
+    const cmd = try buildCaptureCommand("capture.bin", false, 0, 150, false, .buffer, 24_000_000);
+    try std.testing.expectEqual(@as(?u64, 150), cmd.time_ms);
+    try std.testing.expectEqual(@as(usize, 0), cmd.sample_bytes);
 }

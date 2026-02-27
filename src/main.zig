@@ -76,8 +76,8 @@ fn printUsage(writer: anytype) !void {
         \\Usage:
         \\  pxlobster --scan
         \\  pxlobster --prime-fw
-        \\  pxlobster -o <path> [-c <key=value>] [--samples <bytes>] [--decode-cross] [--op-mode <buffer|stream|loop>] [--samplerate <hz>]
-        \\  pxlobster --stdout [-c <key=value>] [--samples <bytes>] [--decode-cross] [--op-mode <buffer|stream|loop>] [--samplerate <hz>]
+        \\  pxlobster -o <path> [-c <key=value>] [--samples <bytes>|--time <ms>] [--decode-cross] [--op-mode <buffer|stream|loop>] [--samplerate <hz>]
+        \\  pxlobster --stdout [-c <key=value>] [--samples <bytes>|--time <ms>] [--decode-cross] [--op-mode <buffer|stream|loop>] [--samplerate <hz>]
         \\
         \\Options:
         \\  --scan               Read-only scan for supported PX Logic devices.
@@ -86,6 +86,7 @@ fn printUsage(writer: anytype) !void {
         \\  --stdout             Stream raw binary capture to stdout (pipe-friendly).
         \\  -c, --config         Capture config key-value (e.g. samplerate=24M).
         \\  --samples            Capture bytes target for buffer/stream (default: 8388608).
+        \\  --time               Capture duration target in milliseconds (mutually exclusive with --samples).
         \\  --decode-cross       Decode PXView LA_CROSS_DATA into packed channel samples.
         \\  --op-mode            Capture operation mode: buffer | stream | loop (default: buffer).
         \\  --samplerate         Capture sample rate in Hz (must be a PXView-supported discrete value).
@@ -212,6 +213,7 @@ fn runCapture(cmd: args.CaptureCommand, stdout: anytype, stderr: anytype) !void 
             .output_target = output_target,
             .output_format = output_format,
             .sample_bytes = cmd.sample_bytes,
+            .duration_ms = cmd.time_ms,
             .decode_cross = cmd.decode_cross,
             .capture_profile = .{
                 .op_mode = op_mode,
