@@ -279,9 +279,17 @@ pub fn runCapture(
     while (initialized < slots.len) : (initialized += 1) {
         var slot = &slots[initialized];
         slot.buffer = try allocator.alloc(u8, options.transfer_size);
+        errdefer if (slot.buffer) |buffer| {
+            allocator.free(buffer);
+            slot.buffer = null;
+        };
 
         const transfer = c.libusb_alloc_transfer(0) orelse return error.LibusbAllocTransferFailed;
         slot.transfer = transfer;
+        errdefer if (slot.transfer) |owned_transfer| {
+            c.libusb_free_transfer(owned_transfer);
+            slot.transfer = null;
+        };
         slot.callback_ctx = .{ .shared = &shared };
 
         c.libusb_fill_bulk_transfer(

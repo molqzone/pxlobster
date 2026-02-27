@@ -49,7 +49,7 @@ pub fn main() !void {
     switch (parsed.command) {
         .scan => try scanUsbDevices(stdout, stderr, parsed.verbose),
         .prime_fw => try primeFirmware(stdout, stderr, parsed.verbose),
-        .capture => |options| try runCapture(options, stdout, stderr, parsed.verbose),
+        .capture => try runCapture(parsed, stdout, stderr),
     }
 }
 
@@ -208,10 +208,16 @@ fn primeFirmware(stdout: anytype, stderr: anytype, verbose: bool) !void {
     }
 }
 
-fn runCapture(cmd: args.CaptureCommand, stdout: anytype, stderr: anytype, verbose: bool) !void {
+fn runCapture(parsed: args.ParsedCommand, stdout: anytype, stderr: anytype) !void {
     if (comptime builtin.is_test) {
         return;
     } else {
+        const cmd = switch (parsed.command) {
+            .capture => |capture_cmd| capture_cmd,
+            else => unreachable,
+        };
+        const verbose = parsed.verbose;
+
         try verboseLog(verbose, stderr, "verbose: capture start mode={s} samplerate={d} samples={d} decode_cross={any} strict_probe={any}\n", .{
             @tagName(cmd.op_mode),
             cmd.samplerate_hz,
