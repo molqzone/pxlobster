@@ -279,7 +279,7 @@ pub fn runCapture(
         .stdout => true,
         .file_path => false,
     };
-    if (options.output_format == .sr and output_stdout) return error.InvalidOutputTarget;
+    std.debug.assert(!(options.output_format == .sr and output_stdout));
 
     var temp_output_path: ?[]u8 = null;
     defer if (temp_output_path) |path| {
@@ -475,7 +475,7 @@ pub fn runCapture(
         const raw_path = temp_output_path orelse return error.OutputPathMissing;
         const output_path = switch (options.output_target) {
             .file_path => |path| path,
-            .stdout => return error.InvalidOutputTarget,
+            .stdout => unreachable,
         };
         try output_file.sync();
         try srzip.writeSessionFromRawFile(allocator, .{
