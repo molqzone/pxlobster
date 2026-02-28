@@ -230,6 +230,13 @@ fn requiresStrictChannelCountProbe(options: CaptureOptions) bool {
     return options.duration_ms != null or options.strict_channel_count_probe or options.decode_cross;
 }
 
+fn srOutputPathFor(options: CaptureOptions) !?[]const u8 {
+    return switch (options.output_target) {
+        .file_path => |path| if (options.output_format == .sr) path else null,
+        .stdout => if (options.output_format == .sr) error.InvalidOutputTarget else null,
+    };
+}
+
 pub fn runCapture(
     allocator: std.mem.Allocator,
     ctx: *c.libusb_context,
@@ -239,6 +246,7 @@ pub fn runCapture(
     if (options.transfer_size == 0) return error.InvalidTransferSize;
     if (options.transfer_size > std.math.maxInt(u32)) return error.TransferSizeTooLarge;
     if (options.ring_capacity_bytes < options.transfer_size) return error.RingBufferTooSmall;
+    const sr_output_path = try srOutputPathFor(options);
 
     var ring = try ringbuffer.RingBuffer.init(allocator, options.ring_capacity_bytes);
     defer ring.deinit();
@@ -279,7 +287,6 @@ pub fn runCapture(
         .stdout => true,
         .file_path => false,
     };
-    std.debug.assert(!(options.output_format == .sr and output_stdout));
 
     var temp_output_path: ?[]u8 = null;
     defer if (temp_output_path) |path| {
@@ -292,7 +299,7 @@ pub fn runCapture(
     switch (options.output_target) {
         .file_path => |output_path| {
             const capture_output_path: []const u8 = blk: {
-                if (options.output_format == .sr) {
+                if (sr_output_path != null) {
                     const temp_path = try std.fmt.allocPrint(allocator, "{s}.pxlobster.raw.tmp", .{output_path});
                     temp_output_path = temp_path;
                     break :blk temp_path;
@@ -473,10 +480,7 @@ pub fn runCapture(
 
     if (options.output_format == .sr) {
         const raw_path = temp_output_path orelse return error.OutputPathMissing;
-        const output_path = switch (options.output_target) {
-            .file_path => |path| path,
-            .stdout => unreachable,
-        };
+        const output_path = sr_output_path orelse return error.InvalidOutputTarget;
         try output_file.sync();
         try srzip.writeSessionFromRawFile(allocator, .{
             .output_path = output_path,
@@ -773,6 +777,29 @@ test "requiresStrictChannelCountProbe is false for default capture mode" {
         .output_target = .stdout,
         .sample_bytes = 4096,
     }));
+}
+
+test "srOutputPathFor rejects sr format with stdout target" {
+    try std.testing.expectError(error.InvalidOutputTarget, srOutputPathFor(.{
+        .output_target = .stdout,
+        .sample_bytes = 1024,
+        .output_format = .sr,
+    }));
+}
+
+test "srOutputPathFor tracks sr output path only for sr file output" {
+    const sr_path = (try srOutputPathFor(.{
+        .output_target = .{ .file_path = "capture.bin" },
+        .sample_bytes = 1024,
+        .output_format = .sr,
+    })) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("capture.bin", sr_path);
+
+    try std.testing.expect((try srOutputPathFor(.{
+        .output_target = .{ .file_path = "capture.sr" },
+        .sample_bytes = 1024,
+        .output_format = .bin,
+    })) == null);
 }
 
 test "validateTriggerMasksForChannelCount accepts masks within channel range" {
