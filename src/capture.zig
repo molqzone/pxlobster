@@ -802,6 +802,15 @@ test "srOutputPathFor tracks sr output path only for sr file output" {
     })) == null);
 }
 
+test "runCapture rejects sr format with stdout target before usb setup" {
+    const fake_ctx: *c.libusb_context = @ptrFromInt(0x3000);
+    try std.testing.expectError(error.InvalidOutputTarget, runCapture(std.testing.allocator, fake_ctx, .{
+        .output_target = .stdout,
+        .sample_bytes = 1024,
+        .output_format = .sr,
+    }));
+}
+
 test "validateTriggerMasksForChannelCount accepts masks within channel range" {
     try validateTriggerMasksForChannelCount(.{
         .trigger_zero = 1 << 15,
