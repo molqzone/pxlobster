@@ -243,7 +243,10 @@ fn patchLocalFileHeader(file: std.fs.File, summary: EntrySummary) !void {
     writeU32LE(patch[8..12], summary.uncompressed_size);
 
     const patch_offset: u64 = summary.local_header_offset + 14;
+    // Keep append position stable for subsequent ZIP records on all platforms.
+    const write_pos = try file.getPos();
     try file.pwriteAll(&patch, patch_offset);
+    try file.seekTo(write_pos);
 }
 
 /// 为已写出的本地条目写一条中央目录头 / Writes one central directory header for a previously emitted local entry.
