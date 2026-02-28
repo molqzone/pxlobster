@@ -83,7 +83,7 @@ jobs:
 
       - name: Build ReleaseFast (Target)
         if: matrix.zig_target != ''
-        run: zig build -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseFast -Dlibusb-lib-dir=C:/msys64/mingw64/lib
+        run: zig build -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseFast -Dlibusb-lib-dir=C:/msys64/mingw64/lib -Dlibusb-link-file=C:/msys64/mingw64/lib/libusb-1.0.dll.a
 
       - name: Package Artifacts (Unix)
         if: matrix.platform != 'windows'
