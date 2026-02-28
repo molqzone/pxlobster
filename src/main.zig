@@ -223,6 +223,7 @@ fn runCapture(parsed: args.ParsedCommand, stdout: anytype, stderr: anytype) !voi
         },
     }) catch |err| {
         try stderr.print("capture failed: {s}\n", .{@errorName(err)});
+        try stderr.flush();
         std.process.exit(1);
     };
 
