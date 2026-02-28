@@ -61,6 +61,7 @@ jobs:
 
       - name: Install libusb (Windows, MinGW)
         if: matrix.platform == 'windows'
+        id: setup_msys2
         uses: msys2/setup-msys2@v2
         with:
           update: true
@@ -70,12 +71,29 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          if (Test-Path "C:/msys64/mingw64/lib/libusb-1.0.dll.a") {
-            Copy-Item "C:/msys64/mingw64/lib/libusb-1.0.dll.a" "C:/msys64/mingw64/lib/libusb-1.0.a" -Force
+          $msys_root = Join-Path $env:RUNNER_TEMP "setup-msys2"
+          $mingw_lib = Join-Path $msys_root "mingw64/lib"
+          $mingw_bin = Join-Path $msys_root "mingw64/bin"
+          $usr_bin = Join-Path $msys_root "usr/bin"
+          $libusb_link_file = Join-Path $mingw_lib "libusb-1.0.dll.a"
+
+          if (-not (Test-Path $libusb_link_file)) {
+            $found = Get-ChildItem -Path $env:RUNNER_TEMP -Filter "libusb-1.0.dll.a" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($null -ne $found) {
+              $libusb_link_file = $found.FullName
+              $mingw_lib = $found.DirectoryName
+              $mingw_bin = Join-Path (Split-Path $mingw_lib -Parent) "bin"
+              $usr_bin = Join-Path $msys_root "usr/bin"
+            } else {
+              throw "libusb import archive not found under RUNNER_TEMP"
+            }
           }
-          "PATH=C:/msys64/mingw64/bin;C:/msys64/usr/bin;$env:PATH" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "LIBRARY_PATH=C:/msys64/mingw64/lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "PKG_CONFIG_PATH=C:/msys64/mingw64/lib/pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MSYS2_ROOT=$msys_root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MSYS2_MINGW_LIB=$mingw_lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MSYS2_LIBUSB_LINK_FILE=$libusb_link_file" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PATH=$mingw_bin;$usr_bin;$env:PATH" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LIBRARY_PATH=$mingw_lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PKG_CONFIG_PATH=$mingw_lib/pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build ReleaseFast (Native)
         if: matrix.zig_target == ''
@@ -83,7 +101,7 @@ jobs:
 
       - name: Build ReleaseFast (Target)
         if: matrix.zig_target != ''
-        run: zig build -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseFast -Dlibusb-lib-dir=C:/msys64/mingw64/lib -Dlibusb-link-file=C:/msys64/mingw64/lib/libusb-1.0.dll.a
+        run: zig build -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseFast -Dlibusb-lib-dir="${{ env.MSYS2_MINGW_LIB }}" -Dlibusb-link-file="${{ env.MSYS2_LIBUSB_LINK_FILE }}"
 
       - name: Package Artifacts (Unix)
         if: matrix.platform != 'windows'
