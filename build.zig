@@ -12,7 +12,8 @@ fn configureLibUsb(b: *std.Build, artifact: *std.Build.Step.Compile) void {
 
     // Link against system-provided libusb runtime.
     artifact.root_module.linkSystemLibrary("usb-1.0", .{
-        .use_pkg_config = .no,
+        // Prefer pkg-config so CI/release cross-environments can resolve libusb paths.
+        .use_pkg_config = .force,
         .preferred_link_mode = .dynamic,
     });
 }
