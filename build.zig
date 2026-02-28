@@ -1,6 +1,10 @@
 const std = @import("std");
 
-fn configureLibUsb(b: *std.Build, artifact: *std.Build.Step.Compile) void {
+fn configureLibUsb(
+    b: *std.Build,
+    artifact: *std.Build.Step.Compile,
+    libusb_lib_dir: ?[]const u8,
+) void {
     // libusb source comes from build.zig.zon dependency (headers vendored by Zig cache).
     if (b.lazyDependency("libusb", .{})) |libusb_dep| {
         artifact.addIncludePath(libusb_dep.path(""));
@@ -10,10 +14,14 @@ fn configureLibUsb(b: *std.Build, artifact: *std.Build.Step.Compile) void {
     // Required for @cImport interop with libusb headers.
     artifact.linkLibC();
 
+    // Optional override for environments where the dynamic library path is non-standard.
+    if (libusb_lib_dir) |lib_dir| {
+        artifact.addLibraryPath(.{ .cwd_relative = lib_dir });
+    }
+
     // Link against system-provided libusb runtime.
     artifact.root_module.linkSystemLibrary("usb-1.0", .{
-        // Prefer pkg-config so CI/release cross-environments can resolve libusb paths.
-        .use_pkg_config = .force,
+        .use_pkg_config = .no,
         .preferred_link_mode = .dynamic,
     });
 }
@@ -34,6 +42,7 @@ pub fn build(b: *std.Build) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
+    const libusb_lib_dir = b.option([]const u8, "libusb-lib-dir", "Custom libusb library directory");
     // It's also possible to define more custom flags to toggle optional features
     // of this build script using `b.option()`. All defined flags (including
     // target and optimize options) will be listed when running `zig build --help`
@@ -109,7 +118,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    configureLibUsb(b, exe);
+    configureLibUsb(b, exe, libusb_lib_dir);
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default
@@ -149,7 +158,7 @@ pub fn build(b: *std.Build) void {
     const mod_tests = b.addTest(.{
         .root_module = mod,
     });
-    configureLibUsb(b, mod_tests);
+    configureLibUsb(b, mod_tests, libusb_lib_dir);
 
     // A run step that will run the test executable.
     const run_mod_tests = b.addRunArtifact(mod_tests);
@@ -160,7 +169,7 @@ pub fn build(b: *std.Build) void {
     const exe_tests = b.addTest(.{
         .root_module = exe.root_module,
     });
-    configureLibUsb(b, exe_tests);
+    configureLibUsb(b, exe_tests, libusb_lib_dir);
 
     // A run step that will run the second test executable.
     const run_exe_tests = b.addRunArtifact(exe_tests);
@@ -176,7 +185,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    configureLibUsb(b, capture_tests);
+    configureLibUsb(b, capture_tests, libusb_lib_dir);
     const run_capture_tests = b.addRunArtifact(capture_tests);
 
     const args_clap_integration = b.addExecutable(.{
