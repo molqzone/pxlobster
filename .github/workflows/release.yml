@@ -20,32 +20,22 @@ jobs:
           - platform: linux
             arch: x86_64
             runs_on: ubuntu-latest
-            zig_target: x86_64-linux-gnu
-            archive_ext: tar.gz
+            zig_target: ""
             bin_path: zig-out/bin/pxlobster
           - platform: linux
             arch: aarch64
             runs_on: ubuntu-24.04-arm
-            zig_target: aarch64-linux-gnu
-            archive_ext: tar.gz
-            bin_path: zig-out/bin/pxlobster
-          - platform: macos
-            arch: x86_64
-            runs_on: macos-13
-            zig_target: x86_64-macos
-            archive_ext: tar.gz
+            zig_target: ""
             bin_path: zig-out/bin/pxlobster
           - platform: macos
             arch: aarch64
             runs_on: macos-14
-            zig_target: aarch64-macos
-            archive_ext: tar.gz
+            zig_target: ""
             bin_path: zig-out/bin/pxlobster
           - platform: windows
             arch: x86_64
             runs_on: windows-latest
             zig_target: x86_64-windows-gnu
-            archive_ext: zip
             bin_path: zig-out/bin/pxlobster.exe
 
     steps:
@@ -74,7 +64,7 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           update: true
-          install: mingw-w64-x86_64-libusb
+          install: mingw-w64-x86_64-libusb mingw-w64-x86_64-gcc
 
       - name: Export MinGW library path (Windows)
         if: matrix.platform == 'windows'
@@ -82,7 +72,12 @@ jobs:
         run: |
           "LIBRARY_PATH=C:/msys64/mingw64/lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Build ReleaseFast
+      - name: Build ReleaseFast (Native)
+        if: matrix.zig_target == ''
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Build ReleaseFast (Target)
+        if: matrix.zig_target != ''
         run: zig build -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseFast
 
       - name: Package Artifacts (Unix)
