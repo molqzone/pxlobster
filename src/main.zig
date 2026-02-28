@@ -45,14 +45,15 @@ fn printUsage(writer: anytype) !void {
         \\Usage:
         \\  pxlobster [--verbose] --scan
         \\  pxlobster [--verbose] --prime-fw
-        \\  pxlobster [--verbose] -o <path> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
-        \\  pxlobster [--verbose] --stdout [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
+        \\  pxlobster [--verbose] -o <path> --format <bin|sr> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
+        \\  pxlobster [--verbose] --stdout --format <bin> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
         \\
         \\Options:
         \\  --scan               Read-only scan for supported PX Logic devices.
         \\  --prime-fw           Inject firmware to detected PX Logic devices.
-        \\  -o, --output-file    Output file (.sr => Sigrok session, others => raw binary).
-        \\  --stdout             Stream raw binary capture to stdout (pipe-friendly).
+        \\  -o, --output-file    Output destination file path.
+        \\  --stdout             Stream capture bytes to stdout (pipe-friendly).
+        \\  --format             Explicit output format: bin | sr (required for capture; --stdout supports bin only).
         \\  --samples            Capture bytes target for buffer/stream (default: 8388608).
         \\  --time               Capture duration target in milliseconds (mutually exclusive with --samples).
         \\  --decode-cross       Decode PXView LA_CROSS_DATA into packed channel samples.
@@ -64,6 +65,8 @@ fn printUsage(writer: anytype) !void {
         \\
         \\Notes:
         \\  --scan, --prime-fw, and capture mode are mutually exclusive.
+        \\  Output target (--stdout / --output-file) and output format (--format) are configured independently.
+        \\  File extension does not control output format.
         \\  loop mode runs continuously until Ctrl+C.
         \\
     );

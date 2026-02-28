@@ -58,6 +58,7 @@ const clap_params = clap.parseParamsComptime(
     \\    --prime-fw
     \\-o, --output-file <str>...
     \\    --stdout
+    \\    --format <str>...
     \\    --samples <usize>...
     \\    --time <u64>...
     \\    --decode-cross
@@ -130,6 +131,14 @@ fn commandFromParsedArgs(parsed_args: anytype) !ParsedCommand {
     if (output_path != null and output_path.?.len == 0) return error.InvalidArgument;
     const output_stdout = @field(parsed_args, "stdout") > 0;
 
+    var output_format: ?OutputFormat = null;
+    var output_format_set = false;
+    const format_values: []const []const u8 = @field(parsed_args, "format");
+    if (lastValue([]const u8, format_values)) |value| {
+        output_format = parseOutputFormat(value) orelse return error.InvalidArgument;
+        output_format_set = true;
+    }
+
     var samplerate_hz: u64 = default_capture_samplerate_hz;
     var samplerate_set = false;
 
@@ -178,7 +187,7 @@ fn commandFromParsedArgs(parsed_args: anytype) !ParsedCommand {
         triggers_set = true;
     }
 
-    const capture_requested = output_path != null or output_stdout or samples_set or time_set or decode_cross or op_mode_set or samplerate_set or triggers_set;
+    const capture_requested = output_path != null or output_stdout or output_format_set or samples_set or time_set or decode_cross or op_mode_set or samplerate_set or triggers_set;
     if (requested_read_only != null and capture_requested) return error.InvalidArgument;
 
     if (requested_read_only) |command| {
@@ -195,6 +204,7 @@ fn commandFromParsedArgs(parsed_args: anytype) !ParsedCommand {
         .command = .{ .capture = try buildCaptureCommand(
             output_path,
             output_stdout,
+            output_format,
             sample_bytes,
             time_ms,
             decode_cross,
@@ -215,6 +225,7 @@ fn lastValue(comptime T: type, values: []const T) ?T {
 fn buildCaptureCommand(
     output_path: ?[]const u8,
     output_stdout: bool,
+    output_format: ?OutputFormat,
     sample_bytes: usize,
     time_ms: ?u64,
     decode_cross: bool,
@@ -224,11 +235,13 @@ fn buildCaptureCommand(
     triggers_specified: bool,
 ) !CaptureCommand {
     if (output_stdout and output_path != null) return error.InvalidArgument;
+    const selected_output_format = output_format orelse return error.InvalidArgument;
 
     if (output_stdout) {
+        if (selected_output_format == .sr) return error.InvalidArgument;
         return .{
             .output_target = .stdout,
-            .output_format = .bin,
+            .output_format = selected_output_format,
             .sample_bytes = sample_bytes,
             .time_ms = time_ms,
             .decode_cross = decode_cross,
@@ -243,13 +256,12 @@ fn buildCaptureCommand(
     }
 
     if (output_path) |path| {
-        const output_format = inferOutputFormat(path);
         return .{
             .output_target = .{ .file_path = path },
-            .output_format = output_format,
+            .output_format = selected_output_format,
             .sample_bytes = sample_bytes,
             .time_ms = time_ms,
-            .decode_cross = if (output_format == .sr) true else decode_cross,
+            .decode_cross = if (selected_output_format == .sr) true else decode_cross,
             .op_mode = op_mode,
             .samplerate_hz = samplerate_hz,
             .trigger_zero = trigger_masks.trigger_zero,
@@ -281,6 +293,12 @@ fn parseOpMode(value: []const u8) ?OperationMode {
     if (std.mem.eql(u8, value, "buffer")) return .buffer;
     if (std.mem.eql(u8, value, "stream")) return .stream;
     if (std.mem.eql(u8, value, "loop")) return .loop;
+    return null;
+}
+
+fn parseOutputFormat(value: []const u8) ?OutputFormat {
+    if (std.mem.eql(u8, value, "bin")) return .bin;
+    if (std.mem.eql(u8, value, "sr")) return .sr;
     return null;
 }
 
@@ -335,17 +353,12 @@ fn parseSamplerateValue(samplerate: u64) ?u64 {
     return samplerate;
 }
 
-fn inferOutputFormat(path: []const u8) OutputFormat {
-    if (path.len >= 3 and std.ascii.eqlIgnoreCase(path[path.len - 3 ..], ".sr")) {
-        return .sr;
-    }
-    return .bin;
-}
-
 test "parseArgsFromSlice parses stdout capture options" {
     const argv = [_][]const u8{
         "pxlobster",
         "--stdout",
+        "--format",
+        "bin",
         "--samples",
         "65536",
         "--mode",
@@ -379,7 +392,7 @@ test "parseArgsFromSlice parses stdout capture options" {
 }
 
 test "parseArgsFromSlice accepts short -t trigger option" {
-    const argv = [_][]const u8{ "pxlobster", "--stdout", "-t", "2=f,3=0" };
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "-t", "2=f,3=0" };
     const parsed = try parseArgsFromSlice(&argv, std.testing.allocator);
     switch (parsed.command) {
         .capture => |capture_cmd| {
@@ -392,7 +405,7 @@ test "parseArgsFromSlice accepts short -t trigger option" {
 }
 
 test "parseArgsFromSlice leaves triggers_specified false by default" {
-    const argv = [_][]const u8{ "pxlobster", "--stdout", "--samples", "1024" };
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--samples", "1024" };
     const parsed = try parseArgsFromSlice(&argv, std.testing.allocator);
     switch (parsed.command) {
         .capture => |capture_cmd| {
@@ -403,7 +416,7 @@ test "parseArgsFromSlice leaves triggers_specified false by default" {
 }
 
 test "parseArgsFromSlice enables verbose for capture and scan commands" {
-    const capture_argv = [_][]const u8{ "pxlobster", "--stdout", "--samples", "1024", "-v" };
+    const capture_argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--samples", "1024", "-v" };
     const capture_result = try parseArgsFromSlice(&capture_argv, std.testing.allocator);
     switch (capture_result.command) {
         .capture => {},
@@ -421,7 +434,7 @@ test "parseArgsFromSlice enables verbose for capture and scan commands" {
 }
 
 test "parseArgsFromSlice rejects stdout and output-file conflict" {
-    const argv = [_][]const u8{ "pxlobster", "--stdout", "-o", "capture.bin" };
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "-o", "capture.bin" };
     try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
 }
 
@@ -429,7 +442,7 @@ test "parseArgsFromSlice rejects missing option values" {
     const missing_output = [_][]const u8{ "pxlobster", "-o" };
     try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&missing_output, std.testing.allocator));
 
-    const missing_samples = [_][]const u8{ "pxlobster", "--stdout", "--samples" };
+    const missing_samples = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--samples" };
     try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&missing_samples, std.testing.allocator));
 }
 
@@ -439,7 +452,7 @@ test "parseArgsFromSlice returns ShowHelp for --help" {
 }
 
 test "parseArgsFromSlice accepts samplerate from --samplerate" {
-    const argv = [_][]const u8{ "pxlobster", "--stdout", "--samplerate", "25000000" };
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--samplerate", "25000000" };
     const parsed = try parseArgsFromSlice(&argv, std.testing.allocator);
     switch (parsed.command) {
         .capture => |capture_cmd| try std.testing.expectEqual(@as(u64, 25_000_000), capture_cmd.samplerate_hz),
@@ -448,29 +461,29 @@ test "parseArgsFromSlice accepts samplerate from --samplerate" {
 }
 
 test "parseArgsFromSlice rejects invalid mode" {
-    const argv = [_][]const u8{ "pxlobster", "--stdout", "--mode", "invalid" };
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--mode", "invalid" };
     try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
 }
 
 test "parseArgsFromSlice rejects invalid trigger spec" {
-    const argv = [_][]const u8{ "pxlobster", "--stdout", "--triggers", "0=x" };
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--triggers", "0=x" };
     try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
 }
 
 test "parseArgsFromSlice rejects unsupported samplerate" {
-    const argv = [_][]const u8{ "pxlobster", "--stdout", "--samplerate", "123456789" };
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--samplerate", "123456789" };
     try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
-    const legacy_argv = [_][]const u8{ "pxlobster", "--stdout", "--samplerate", "24000000" };
+    const legacy_argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--samplerate", "24000000" };
     try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&legacy_argv, std.testing.allocator));
 }
 
 test "parseArgsFromSlice rejects removed --config option" {
-    const argv = [_][]const u8{ "pxlobster", "--stdout", "--config", "samplerate=25000000" };
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--config", "samplerate=25000000" };
     try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
 }
 
 test "parseArgsFromSlice accepts capture time in milliseconds" {
-    const argv = [_][]const u8{ "pxlobster", "--stdout", "--time", "250", "--samplerate", "10000000" };
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--time", "250", "--samplerate", "10000000" };
     const parsed = try parseArgsFromSlice(&argv, std.testing.allocator);
     switch (parsed.command) {
         .capture => |capture_cmd| {
@@ -483,17 +496,17 @@ test "parseArgsFromSlice accepts capture time in milliseconds" {
 }
 
 test "parseArgsFromSlice rejects time and samples together" {
-    const argv = [_][]const u8{ "pxlobster", "--stdout", "--samples", "4096", "--time", "10" };
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--samples", "4096", "--time", "10" };
     try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
 }
 
 test "parseArgsFromSlice rejects zero time" {
-    const argv = [_][]const u8{ "pxlobster", "--stdout", "--time", "0" };
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--time", "0" };
     try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
 }
 
 test "parseArgsFromSlice rejects loop mode with time" {
-    const argv = [_][]const u8{ "pxlobster", "--stdout", "--time", "10", "--mode", "loop" };
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--time", "10", "--mode", "loop" };
     try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
 }
 
@@ -507,6 +520,49 @@ test "parseOpMode accepts supported values" {
     try std.testing.expectEqual(OperationMode.stream, parseOpMode("stream").?);
     try std.testing.expectEqual(OperationMode.loop, parseOpMode("loop").?);
     try std.testing.expect(parseOpMode("invalid") == null);
+}
+
+test "parseOutputFormat accepts supported values" {
+    try std.testing.expectEqual(OutputFormat.bin, parseOutputFormat("bin").?);
+    try std.testing.expectEqual(OutputFormat.sr, parseOutputFormat("sr").?);
+    try std.testing.expect(parseOutputFormat("json") == null);
+}
+
+test "parseArgsFromSlice requires explicit output format for capture" {
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--samples", "1024" };
+    try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
+}
+
+test "parseArgsFromSlice requires explicit output format for output-file target" {
+    const argv = [_][]const u8{ "pxlobster", "-o", "capture.bin", "--samples", "1024" };
+    try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
+}
+
+test "parseArgsFromSlice rejects invalid output format value" {
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "json", "--samples", "1024" };
+    try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
+}
+
+test "parseArgsFromSlice rejects sr format with stdout target" {
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "sr", "--samples", "1024" };
+    try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
+}
+
+test "parseArgsFromSlice uses explicit format regardless of output-file extension" {
+    const argv = [_][]const u8{ "pxlobster", "-o", "capture.sr", "--format", "bin", "--samples", "2048" };
+    var parsed = try parseArgsFromSlice(&argv, std.testing.allocator);
+    defer deinitParsedCommand(&parsed, std.testing.allocator);
+    switch (parsed.command) {
+        .capture => |capture_cmd| {
+            try std.testing.expectEqual(OutputFormat.bin, capture_cmd.output_format);
+            try std.testing.expect(!capture_cmd.decode_cross);
+            switch (capture_cmd.output_target) {
+                .file_path => |path| try std.testing.expectEqualStrings("capture.sr", path),
+                else => return error.TestExpectedEqual,
+            }
+        },
+        else => return error.TestExpectedEqual,
+    }
 }
 
 test "parseTriggerSpec accepts level and edge mappings" {
@@ -544,14 +600,8 @@ test "parseSamplerate accepts only supported discrete values" {
     try std.testing.expect(parseSamplerate("abc") == null);
 }
 
-test "inferOutputFormat auto-detects sr extension" {
-    try std.testing.expectEqual(OutputFormat.sr, inferOutputFormat("capture.sr"));
-    try std.testing.expectEqual(OutputFormat.sr, inferOutputFormat("CAPTURE.SR"));
-    try std.testing.expectEqual(OutputFormat.bin, inferOutputFormat("capture.bin"));
-}
-
 test "buildCaptureCommand selects stdout raw output" {
-    const cmd = try buildCaptureCommand(null, true, 4096, null, true, .stream, 25_000_000, .{
+    const cmd = try buildCaptureCommand(null, true, .bin, 4096, null, true, .stream, 25_000_000, .{
         .trigger_zero = 0xA,
         .trigger_one = 0xB,
         .trigger_rise = 0xC,
@@ -577,23 +627,37 @@ test "buildCaptureCommand selects stdout raw output" {
 test "buildCaptureCommand rejects stdout and output-file conflict" {
     try std.testing.expectError(
         error.InvalidArgument,
-        buildCaptureCommand("capture.bin", true, 1024, null, false, .buffer, default_capture_samplerate_hz, .{}, false),
+        buildCaptureCommand("capture.bin", true, .bin, 1024, null, false, .buffer, default_capture_samplerate_hz, .{}, false),
     );
 }
 
-test "buildCaptureCommand enables decode-cross for sr file output" {
-    const cmd = try buildCaptureCommand("capture.sr", false, 2048, null, false, .buffer, default_capture_samplerate_hz, .{}, false);
+test "buildCaptureCommand rejects missing output format" {
+    try std.testing.expectError(
+        error.InvalidArgument,
+        buildCaptureCommand("capture.bin", false, null, 1024, null, false, .buffer, default_capture_samplerate_hz, .{}, false),
+    );
+}
+
+test "buildCaptureCommand rejects sr format for stdout target" {
+    try std.testing.expectError(
+        error.InvalidArgument,
+        buildCaptureCommand(null, true, .sr, 1024, null, false, .buffer, default_capture_samplerate_hz, .{}, false),
+    );
+}
+
+test "buildCaptureCommand uses explicit sr format regardless of file extension" {
+    const cmd = try buildCaptureCommand("capture.bin", false, .sr, 2048, null, false, .buffer, default_capture_samplerate_hz, .{}, false);
     try std.testing.expectEqual(OutputFormat.sr, cmd.output_format);
     try std.testing.expect(cmd.decode_cross);
     try std.testing.expect(!cmd.triggers_specified);
     switch (cmd.output_target) {
-        .file_path => |path| try std.testing.expectEqualStrings("capture.sr", path),
+        .file_path => |path| try std.testing.expectEqualStrings("capture.bin", path),
         else => return error.TestExpectedEqual,
     }
 }
 
 test "buildCaptureCommand preserves time option" {
-    const cmd = try buildCaptureCommand("capture.bin", false, 0, 150, false, .buffer, 25_000_000, .{}, false);
+    const cmd = try buildCaptureCommand("capture.bin", false, .bin, 0, 150, false, .buffer, 25_000_000, .{}, false);
     try std.testing.expectEqual(@as(?u64, 150), cmd.time_ms);
     try std.testing.expectEqual(@as(usize, 0), cmd.sample_bytes);
 }
