@@ -127,6 +127,7 @@ const LoopSignalGuard = struct {
     }
 
     fn restore(self: *LoopSignalGuard) void {
+        if (!supports_posix_sigint) return;
         if (!self.active) return;
         std.posix.sigaction(std.posix.SIG.INT, &self.previous, null);
         self.active = false;
