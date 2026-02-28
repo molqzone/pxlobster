@@ -1,11 +1,5 @@
 const std = @import("std");
-const builtin = @import("builtin");
-const firmware = if (builtin.is_test) struct {
-    // Single-file `zig test src/main.zig` has no build.zig module graph.
-    // Keep test-only payloads non-empty so compile-time guards still hold.
-    pub const fpga_reset_bitstream: []const u8 = &[_]u8{0};
-    pub const fpga_bitstream: []const u8 = &[_]u8{0};
-} else @import("pxresources");
+const firmware = @import("pxresources");
 const usb = @import("usb.zig");
 
 const c = usb.c;

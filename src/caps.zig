@@ -2,6 +2,12 @@ const std = @import("std");
 
 pub const default_capture_samplerate_hz: u64 = 250_000_000;
 
+pub const OperationMode = enum {
+    buffer,
+    stream,
+    loop,
+};
+
 pub const GpioTiming = struct {
     mode: u32,
     div: u32,
@@ -27,9 +33,6 @@ pub fn gpioTimingForSamplerate(samplerate_hz: u64) !GpioTiming {
             .div = switch (samplerate_hz) {
                 50_000_000 => 1,
                 25_000_000 => 3,
-                // 24 MHz is accepted for CLI compatibility and mapped to the nearest
-                // PXView-supported divider profile.
-                24_000_000 => 3,
                 20_000_000 => 4,
                 10_000_000 => 9,
                 5_000_000 => 19,
@@ -55,15 +58,17 @@ pub fn gpioTimingForSamplerate(samplerate_hz: u64) !GpioTiming {
 test "gpioTimingForSamplerate matches pxview table" {
     try std.testing.expectEqualDeep(GpioTiming{ .mode = 2, .div = 0 }, try gpioTimingForSamplerate(250_000_000));
     try std.testing.expectEqualDeep(GpioTiming{ .mode = 7, .div = 9 }, try gpioTimingForSamplerate(10_000_000));
-    try std.testing.expectEqualDeep(GpioTiming{ .mode = 7, .div = 3 }, try gpioTimingForSamplerate(24_000_000));
+    try std.testing.expectEqualDeep(GpioTiming{ .mode = 7, .div = 3 }, try gpioTimingForSamplerate(25_000_000));
     try std.testing.expectEqualDeep(GpioTiming{ .mode = 7, .div = 49_999 }, try gpioTimingForSamplerate(2_000));
+    try std.testing.expectError(error.InvalidSamplerate, gpioTimingForSamplerate(24_000_000));
     try std.testing.expectError(error.InvalidSamplerate, gpioTimingForSamplerate(12_345));
 }
 
 test "isSupportedSamplerate accepts only pxview rates" {
     try std.testing.expect(isSupportedSamplerate(250_000_000));
     try std.testing.expect(isSupportedSamplerate(10_000_000));
-    try std.testing.expect(isSupportedSamplerate(24_000_000));
+    try std.testing.expect(isSupportedSamplerate(25_000_000));
+    try std.testing.expect(!isSupportedSamplerate(24_000_000));
     try std.testing.expect(!isSupportedSamplerate(0));
     try std.testing.expect(!isSupportedSamplerate(12_345));
 }

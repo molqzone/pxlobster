@@ -1,45 +1,26 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const args = @import("args.zig");
-const capture = if (builtin.is_test) struct {} else @import("capture.zig");
-const usb = if (builtin.is_test) struct {} else @import("usb.zig");
-
-const TestLibUsb = struct {
-    pub const LIBUSB_SPEED_HIGH: c_int = 3;
-    pub const LIBUSB_SPEED_SUPER: c_int = 4;
-    pub const libusb_context = opaque {};
-    pub const libusb_device = opaque {};
-    pub const libusb_device_handle = opaque {};
-};
-
-const TestDevice = struct {
-    pub fn isWchPxLogic(vid: u16, pid: u16) bool {
-        return vid == 0x1A86 and pid == 0x5237;
-    }
-
-    pub fn isLegacyPxLogic(vid: u16, pid: u16) bool {
-        return vid == 0x16C0 and pid == 0x05DC;
-    }
-
-    pub fn isSupportedPxLogic(vid: u16, pid: u16) bool {
-        return TestDevice.isWchPxLogic(vid, pid) or TestDevice.isLegacyPxLogic(vid, pid);
-    }
-};
-
-const device = if (builtin.is_test) TestDevice else @import("device.zig");
-const c = if (builtin.is_test) TestLibUsb else @import("pxlobster").libusb;
+const capture = @import("capture.zig");
+const usb = @import("usb.zig");
+const device = @import("device.zig");
+const c = usb.c;
 
 pub fn main() !void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    var stdout = std.fs.File.stdout().writer(&stdout_buffer);
+    defer stdout.interface.flush() catch {};
+    var stderr = std.fs.File.stderr().writer(&stderr_buffer);
+    defer stderr.interface.flush() catch {};
 
     var parsed = args.parseArgs() catch |err| switch (err) {
         error.ShowHelp => {
-            try printUsage(stdout);
+            try printUsage(&stdout.interface);
             return;
         },
         error.InvalidArgument => {
-            try printUsage(stderr);
+            try printUsage(&stderr.interface);
+            try stderr.interface.flush();
             std.process.exit(2);
         },
         else => return err,
@@ -47,9 +28,9 @@ pub fn main() !void {
     defer args.deinitParsedCommand(&parsed, std.heap.page_allocator);
 
     switch (parsed.command) {
-        .scan => try scanUsbDevices(stdout, stderr, parsed.verbose),
-        .prime_fw => try primeFirmware(stdout, stderr, parsed.verbose),
-        .capture => try runCapture(parsed, stdout, stderr),
+        .scan => try scanUsbDevices(&stdout.interface, &stderr.interface, parsed.verbose),
+        .prime_fw => try primeFirmware(&stdout.interface, &stderr.interface, parsed.verbose),
+        .capture => try runCapture(parsed, &stdout.interface, &stderr.interface),
     }
 }
 
@@ -59,32 +40,19 @@ const LogicModeProbe = union(enum) {
     unavailable,
 };
 
-fn isWchPxLogic(vid: u16, pid: u16) bool {
-    return device.isWchPxLogic(vid, pid);
-}
-
-fn isLegacyPxLogic(vid: u16, pid: u16) bool {
-    return device.isLegacyPxLogic(vid, pid);
-}
-
-fn isSupportedPxLogic(vid: u16, pid: u16) bool {
-    return device.isSupportedPxLogic(vid, pid);
-}
-
 fn printUsage(writer: anytype) !void {
     try writer.writeAll(
         \\Usage:
         \\  pxlobster [--verbose] --scan
         \\  pxlobster [--verbose] --prime-fw
-        \\  pxlobster [--verbose] -o <path> [-c <key=value>] [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
-        \\  pxlobster [--verbose] --stdout [-c <key=value>] [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
+        \\  pxlobster [--verbose] -o <path> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
+        \\  pxlobster [--verbose] --stdout [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
         \\
         \\Options:
         \\  --scan               Read-only scan for supported PX Logic devices.
         \\  --prime-fw           Inject firmware to detected PX Logic devices.
         \\  -o, --output-file    Output file (.sr => Sigrok session, others => raw binary).
         \\  --stdout             Stream raw binary capture to stdout (pipe-friendly).
-        \\  -c, --config         Capture config key-value (e.g. samplerate=24M).
         \\  --samples            Capture bytes target for buffer/stream (default: 8388608).
         \\  --time               Capture duration target in milliseconds (mutually exclusive with --samples).
         \\  --decode-cross       Decode PXView LA_CROSS_DATA into packed channel samples.
@@ -107,212 +75,190 @@ fn verboseLog(enabled: bool, writer: anytype, comptime fmt: []const u8, values: 
 }
 
 fn scanUsbDevices(stdout: anytype, stderr: anytype, verbose: bool) !void {
-    if (comptime builtin.is_test) {
-        return;
-    } else {
-        try verboseLog(verbose, stderr, "verbose: scan start\n", .{});
-        var ctx: ?*c.libusb_context = null;
-        const init_rc = c.libusb_init(&ctx);
-        if (init_rc != 0 or ctx == null) return error.LibusbInitFailed;
-        defer c.libusb_exit(ctx);
-        try verboseLog(verbose, stderr, "verbose: libusb_init ok\n", .{});
+    try verboseLog(verbose, stderr, "verbose: scan start\n", .{});
+    var ctx: ?*c.libusb_context = null;
+    const init_rc = c.libusb_init(&ctx);
+    if (init_rc != 0 or ctx == null) return error.LibusbInitFailed;
+    defer c.libusb_exit(ctx);
+    try verboseLog(verbose, stderr, "verbose: libusb_init ok\n", .{});
 
-        const active_ctx = ctx.?;
+    const active_ctx = ctx.?;
 
-        var device_list: [*c]?*c.libusb_device = undefined;
-        const count = c.libusb_get_device_list(active_ctx, &device_list);
-        if (count < 0) return error.LibusbGetDeviceListFailed;
-        defer c.libusb_free_device_list(device_list, 1);
-        try verboseLog(verbose, stderr, "verbose: device count={d}\n", .{count});
+    var device_list: [*c]?*c.libusb_device = undefined;
+    const count = c.libusb_get_device_list(active_ctx, &device_list);
+    if (count < 0) return error.LibusbGetDeviceListFailed;
+    defer c.libusb_free_device_list(device_list, 1);
+    try verboseLog(verbose, stderr, "verbose: device count={d}\n", .{count});
 
-        var found_supported = false;
-        const count_usize: usize = @intCast(count);
-        const device_slice = @as([*]?*c.libusb_device, @ptrCast(device_list))[0..count_usize];
-        for (device_slice) |dev_opt| {
-            if (dev_opt == null) continue;
+    var found_supported = false;
+    const count_usize: usize = @intCast(count);
+    const device_slice = @as([*]?*c.libusb_device, @ptrCast(device_list))[0..count_usize];
+    for (device_slice) |dev_opt| {
+        if (dev_opt == null) continue;
 
-            var desc: c.libusb_device_descriptor = undefined;
-            if (c.libusb_get_device_descriptor(dev_opt.?, &desc) != 0) continue;
+        var desc: c.libusb_device_descriptor = undefined;
+        if (c.libusb_get_device_descriptor(dev_opt.?, &desc) != 0) continue;
 
-            const vid: u16 = @intCast(desc.idVendor);
-            const pid: u16 = @intCast(desc.idProduct);
-            const bus = c.libusb_get_bus_number(dev_opt.?);
-            const address = c.libusb_get_device_address(dev_opt.?);
-            const speed = c.libusb_get_device_speed(dev_opt.?);
-            try verboseLog(verbose, stderr, "verbose: scan device bus={d} addr={d} speed={d} vid={X:0>4} pid={X:0>4}\n", .{ bus, address, speed, vid, pid });
-            const tag = detectTag(dev_opt.?, vid, pid);
-            if (tag) |label| {
-                found_supported = true;
-                try verboseLog(verbose, stderr, "verbose: matched {s}\n", .{label});
-                try stdout.print("{X:0>4}:{X:0>4}  {s}\n", .{ vid, pid, label });
-            }
+        const vid: u16 = @intCast(desc.idVendor);
+        const pid: u16 = @intCast(desc.idProduct);
+        const bus = c.libusb_get_bus_number(dev_opt.?);
+        const address = c.libusb_get_device_address(dev_opt.?);
+        const speed = c.libusb_get_device_speed(dev_opt.?);
+        try verboseLog(verbose, stderr, "verbose: scan device bus={d} addr={d} speed={d} vid={X:0>4} pid={X:0>4}\n", .{ bus, address, speed, vid, pid });
+        const tag = detectTag(dev_opt.?, vid, pid);
+        if (tag) |label| {
+            found_supported = true;
+            try verboseLog(verbose, stderr, "verbose: matched {s}\n", .{label});
+            try stdout.print("{X:0>4}:{X:0>4}  {s}\n", .{ vid, pid, label });
         }
+    }
 
-        if (!found_supported) {
-            try stdout.writeAll("No supported devices found.\n");
-            try verboseLog(verbose, stderr, "verbose: no supported devices detected\n", .{});
-        }
+    if (!found_supported) {
+        try stdout.writeAll("No supported devices found.\n");
+        try verboseLog(verbose, stderr, "verbose: no supported devices detected\n", .{});
     }
 }
 
 fn primeFirmware(stdout: anytype, stderr: anytype, verbose: bool) !void {
-    if (comptime builtin.is_test) {
-        return;
-    } else {
-        try verboseLog(verbose, stderr, "verbose: prime-fw start\n", .{});
-        var ctx: ?*c.libusb_context = null;
-        const init_rc = c.libusb_init(&ctx);
-        if (init_rc != 0 or ctx == null) return error.LibusbInitFailed;
-        defer c.libusb_exit(ctx);
-        try verboseLog(verbose, stderr, "verbose: libusb_init ok\n", .{});
+    try verboseLog(verbose, stderr, "verbose: prime-fw start\n", .{});
+    var ctx: ?*c.libusb_context = null;
+    const init_rc = c.libusb_init(&ctx);
+    if (init_rc != 0 or ctx == null) return error.LibusbInitFailed;
+    defer c.libusb_exit(ctx);
+    try verboseLog(verbose, stderr, "verbose: libusb_init ok\n", .{});
 
-        const active_ctx = ctx.?;
+    const active_ctx = ctx.?;
 
-        var device_list: [*c]?*c.libusb_device = undefined;
-        const count = c.libusb_get_device_list(active_ctx, &device_list);
-        if (count < 0) return error.LibusbGetDeviceListFailed;
-        defer c.libusb_free_device_list(device_list, 1);
-        try verboseLog(verbose, stderr, "verbose: device count={d}\n", .{count});
+    var device_list: [*c]?*c.libusb_device = undefined;
+    const count = c.libusb_get_device_list(active_ctx, &device_list);
+    if (count < 0) return error.LibusbGetDeviceListFailed;
+    defer c.libusb_free_device_list(device_list, 1);
+    try verboseLog(verbose, stderr, "verbose: device count={d}\n", .{count});
 
-        var found_supported = false;
-        const count_usize: usize = @intCast(count);
-        const device_slice = @as([*]?*c.libusb_device, @ptrCast(device_list))[0..count_usize];
-        for (device_slice) |dev_opt| {
-            if (dev_opt == null) continue;
+    var found_supported = false;
+    const count_usize: usize = @intCast(count);
+    const device_slice = @as([*]?*c.libusb_device, @ptrCast(device_list))[0..count_usize];
+    for (device_slice) |dev_opt| {
+        if (dev_opt == null) continue;
 
-            var desc: c.libusb_device_descriptor = undefined;
-            if (c.libusb_get_device_descriptor(dev_opt.?, &desc) != 0) continue;
+        var desc: c.libusb_device_descriptor = undefined;
+        if (c.libusb_get_device_descriptor(dev_opt.?, &desc) != 0) continue;
 
-            const vid: u16 = @intCast(desc.idVendor);
-            const pid: u16 = @intCast(desc.idProduct);
-            if (!isSupportedPxLogic(vid, pid)) continue;
-            found_supported = true;
-            try verboseLog(verbose, stderr, "verbose: prime candidate vid={X:0>4} pid={X:0>4}\n", .{ vid, pid });
+        const vid: u16 = @intCast(desc.idVendor);
+        const pid: u16 = @intCast(desc.idProduct);
+        if (!device.isSupportedPxLogic(vid, pid)) continue;
+        found_supported = true;
+        try verboseLog(verbose, stderr, "verbose: prime candidate vid={X:0>4} pid={X:0>4}\n", .{ vid, pid });
 
-            const state = device.preparePxLogicDevice(dev_opt.?, .{});
-            try verboseLog(verbose, stderr, "verbose: prime result={s}\n", .{@tagName(state)});
-            switch (state) {
-                .ready => {
-                    const label = detectTag(dev_opt.?, vid, pid) orelse "PX-Logic (ready)";
-                    try stdout.print("{X:0>4}:{X:0>4}  {s}  [fw loaded]\n", .{ vid, pid, label });
-                },
-                .busy => try stdout.print("{X:0>4}:{X:0>4}  PX-Logic (Busy)\n", .{ vid, pid }),
-                .failed => try stdout.print("{X:0>4}:{X:0>4}  PX-Logic (firmware load failed)\n", .{ vid, pid }),
-            }
+        const state = device.preparePxLogicDevice(dev_opt.?, .{});
+        try verboseLog(verbose, stderr, "verbose: prime result={s}\n", .{@tagName(state)});
+        switch (state) {
+            .ready => {
+                const label = detectTag(dev_opt.?, vid, pid) orelse "PX-Logic (ready)";
+                try stdout.print("{X:0>4}:{X:0>4}  {s}  [fw loaded]\n", .{ vid, pid, label });
+            },
+            .busy => try stdout.print("{X:0>4}:{X:0>4}  PX-Logic (Busy)\n", .{ vid, pid }),
+            .failed => try stdout.print("{X:0>4}:{X:0>4}  PX-Logic (firmware load failed)\n", .{ vid, pid }),
         }
+    }
 
-        if (!found_supported) {
-            try stdout.writeAll("No supported devices found.\n");
-            try verboseLog(verbose, stderr, "verbose: no supported devices detected\n", .{});
-        }
+    if (!found_supported) {
+        try stdout.writeAll("No supported devices found.\n");
+        try verboseLog(verbose, stderr, "verbose: no supported devices detected\n", .{});
     }
 }
 
 fn runCapture(parsed: args.ParsedCommand, stdout: anytype, stderr: anytype) !void {
-    if (comptime builtin.is_test) {
-        return;
-    } else {
-        const cmd = switch (parsed.command) {
-            .capture => |capture_cmd| capture_cmd,
-            else => unreachable,
-        };
-        const verbose = parsed.verbose;
+    const cmd = switch (parsed.command) {
+        .capture => |capture_cmd| capture_cmd,
+        else => unreachable,
+    };
+    const verbose = parsed.verbose;
 
-        try verboseLog(verbose, stderr, "verbose: capture start mode={s} samplerate={d} samples={d} decode_cross={any} strict_probe={any}\n", .{
-            @tagName(cmd.op_mode),
-            cmd.samplerate_hz,
-            cmd.sample_bytes,
-            cmd.decode_cross,
-            cmd.triggers_specified,
-        });
-        if (cmd.time_ms) |duration_ms| {
-            try verboseLog(verbose, stderr, "verbose: capture duration_ms={d}\n", .{duration_ms});
-        }
-        try verboseLog(verbose, stderr, "verbose: trigger masks zero=0x{X:0>8} one=0x{X:0>8} rise=0x{X:0>8} fall=0x{X:0>8}\n", .{
-            cmd.trigger_zero,
-            cmd.trigger_one,
-            cmd.trigger_rise,
-            cmd.trigger_fall,
-        });
+    try verboseLog(verbose, stderr, "verbose: capture start mode={s} samplerate={d} samples={d} decode_cross={any} strict_probe={any}\n", .{
+        @tagName(cmd.op_mode),
+        cmd.samplerate_hz,
+        cmd.sample_bytes,
+        cmd.decode_cross,
+        cmd.triggers_specified,
+    });
+    if (cmd.time_ms) |duration_ms| {
+        try verboseLog(verbose, stderr, "verbose: capture duration_ms={d}\n", .{duration_ms});
+    }
+    try verboseLog(verbose, stderr, "verbose: trigger masks zero=0x{X:0>8} one=0x{X:0>8} rise=0x{X:0>8} fall=0x{X:0>8}\n", .{
+        cmd.trigger_zero,
+        cmd.trigger_one,
+        cmd.trigger_rise,
+        cmd.trigger_fall,
+    });
 
-        var ctx: ?*c.libusb_context = null;
-        const init_rc = c.libusb_init(&ctx);
-        if (init_rc != 0 or ctx == null) return error.LibusbInitFailed;
-        defer c.libusb_exit(ctx);
-        try verboseLog(verbose, stderr, "verbose: libusb_init ok\n", .{});
+    var ctx: ?*c.libusb_context = null;
+    const init_rc = c.libusb_init(&ctx);
+    if (init_rc != 0 or ctx == null) return error.LibusbInitFailed;
+    defer c.libusb_exit(ctx);
+    try verboseLog(verbose, stderr, "verbose: libusb_init ok\n", .{});
 
-        const output_target = switch (cmd.output_target) {
-            .file_path => |path| capture.CaptureOutputTarget{ .file_path = path },
-            .stdout => capture.CaptureOutputTarget.stdout,
-        };
-        const output_format = switch (cmd.output_format) {
-            .bin => capture.OutputFormat.bin,
-            .sr => capture.OutputFormat.sr,
-        };
-        const op_mode = switch (cmd.op_mode) {
-            .buffer => usb.OperationMode.buffer,
-            .stream => usb.OperationMode.stream,
-            .loop => usb.OperationMode.loop,
-        };
+    const output_target = switch (cmd.output_target) {
+        .file_path => |path| capture.CaptureOutputTarget{ .file_path = path },
+        .stdout => capture.CaptureOutputTarget.stdout,
+    };
+    const output_format = switch (cmd.output_format) {
+        .bin => capture.OutputFormat.bin,
+        .sr => capture.OutputFormat.sr,
+    };
+    const stats = capture.runCapture(std.heap.page_allocator, ctx.?, .{
+        .output_target = output_target,
+        .output_format = output_format,
+        .sample_bytes = cmd.sample_bytes,
+        .duration_ms = cmd.time_ms,
+        .strict_channel_count_probe = cmd.triggers_specified,
+        .decode_cross = cmd.decode_cross,
+        .capture_profile = .{
+            .op_mode = cmd.op_mode,
+            .samplerate_hz = cmd.samplerate_hz,
+            .trigger_zero = cmd.trigger_zero,
+            .trigger_one = cmd.trigger_one,
+            .trigger_rise = cmd.trigger_rise,
+            .trigger_fall = cmd.trigger_fall,
+        },
+    }) catch |err| {
+        try stderr.print("capture failed: {s}\n", .{@errorName(err)});
+        std.process.exit(1);
+    };
 
-        const stats = capture.runCapture(std.heap.page_allocator, ctx.?, .{
-            .output_target = output_target,
-            .output_format = output_format,
-            .sample_bytes = cmd.sample_bytes,
-            .duration_ms = cmd.time_ms,
-            .strict_channel_count_probe = cmd.triggers_specified,
-            .decode_cross = cmd.decode_cross,
-            .capture_profile = .{
-                .op_mode = op_mode,
-                .samplerate_hz = cmd.samplerate_hz,
-                .trigger_zero = cmd.trigger_zero,
-                .trigger_one = cmd.trigger_one,
-                .trigger_rise = cmd.trigger_rise,
-                .trigger_fall = cmd.trigger_fall,
-            },
-        }) catch |err| {
-            try stderr.print("capture failed: {s}\n", .{@errorName(err)});
-            std.process.exit(1);
-        };
+    try verboseLog(verbose, stderr, "verbose: capture done bytes_out={d} bytes_in={d} dropped={d} elapsed_ms={d}\n", .{
+        stats.bytes_out,
+        stats.bytes_in,
+        stats.dropped,
+        stats.elapsed_ms,
+    });
 
-        try verboseLog(verbose, stderr, "verbose: capture done bytes_out={d} bytes_in={d} dropped={d} elapsed_ms={d}\n", .{
-            stats.bytes_out,
-            stats.bytes_in,
-            stats.dropped,
-            stats.elapsed_ms,
-        });
-
-        switch (cmd.output_target) {
-            .file_path => |path| {
-                try stdout.print(
-                    "capture complete: file={s} bytes_out={d} bytes_in={d} dropped={d} elapsed_ms={d}\n",
-                    .{ path, stats.bytes_out, stats.bytes_in, stats.dropped, stats.elapsed_ms },
-                );
-            },
-            .stdout => {
-                try stderr.print(
-                    "capture complete: output=stdout bytes_out={d} bytes_in={d} dropped={d} elapsed_ms={d}\n",
-                    .{ stats.bytes_out, stats.bytes_in, stats.dropped, stats.elapsed_ms },
-                );
-            },
-        }
+    switch (cmd.output_target) {
+        .file_path => |path| {
+            try stdout.print(
+                "capture complete: file={s} bytes_out={d} bytes_in={d} dropped={d} elapsed_ms={d}\n",
+                .{ path, stats.bytes_out, stats.bytes_in, stats.dropped, stats.elapsed_ms },
+            );
+        },
+        .stdout => {
+            try stderr.print(
+                "capture complete: output=stdout bytes_out={d} bytes_in={d} dropped={d} elapsed_ms={d}\n",
+                .{ stats.bytes_out, stats.bytes_in, stats.dropped, stats.elapsed_ms },
+            );
+        },
     }
 }
 
 fn detectTag(dev: *c.libusb_device, vid: u16, pid: u16) ?[]const u8 {
-    if (comptime builtin.is_test) {
-        return modelLabelForIdentity(vid, pid, c.LIBUSB_SPEED_HIGH, .unavailable);
-    } else {
-        if (!isSupportedPxLogic(vid, pid)) return null;
+    if (!device.isSupportedPxLogic(vid, pid)) return null;
 
-        const usb_speed = c.libusb_get_device_speed(dev);
-        const logic_mode: LogicModeProbe = if (isLegacyPxLogic(vid, pid)) readLogicMode(dev) else .unavailable;
-        return modelLabelForIdentity(vid, pid, usb_speed, logic_mode) orelse "PX-Logic (ready)";
-    }
+    const usb_speed = c.libusb_get_device_speed(dev);
+    const logic_mode: LogicModeProbe = if (device.isLegacyPxLogic(vid, pid)) readLogicMode(dev) else .unavailable;
+    return modelLabelForIdentity(vid, pid, usb_speed, logic_mode) orelse "PX-Logic (ready)";
 }
 
 fn modelLabelForIdentity(vid: u16, pid: u16, usb_speed: c_int, logic_mode: LogicModeProbe) ?[]const u8 {
-    if (isWchPxLogic(vid, pid)) {
+    if (device.isWchPxLogic(vid, pid)) {
         return switch (usb_speed) {
             c.LIBUSB_SPEED_SUPER => "PX-Logic U3 channel 32",
             c.LIBUSB_SPEED_HIGH => "PX-Logic U2 channel 32",
@@ -320,7 +266,7 @@ fn modelLabelForIdentity(vid: u16, pid: u16, usb_speed: c_int, logic_mode: Logic
         };
     }
 
-    if (isLegacyPxLogic(vid, pid)) {
+    if (device.isLegacyPxLogic(vid, pid)) {
         return switch (logic_mode) {
             .busy => "PX-Logic (Busy)",
             .value => |mode| switch (mode) {
@@ -361,39 +307,31 @@ fn modelLabelForIdentity(vid: u16, pid: u16, usb_speed: c_int, logic_mode: Logic
 }
 
 fn readLogicMode(dev: *c.libusb_device) LogicModeProbe {
-    if (comptime builtin.is_test) {
-        return .unavailable;
-    } else {
-        var desc: c.libusb_device_descriptor = undefined;
-        if (c.libusb_get_device_descriptor(dev, &desc) != 0) return .unavailable;
+    var desc: c.libusb_device_descriptor = undefined;
+    if (c.libusb_get_device_descriptor(dev, &desc) != 0) return .unavailable;
 
-        var handle_opt: ?*c.libusb_device_handle = null;
-        if (c.libusb_open(dev, &handle_opt) != 0 or handle_opt == null) return .unavailable;
-        const handle = handle_opt.?;
-        defer c.libusb_close(handle);
+    var handle_opt: ?*c.libusb_device_handle = null;
+    if (c.libusb_open(dev, &handle_opt) != 0 or handle_opt == null) return .unavailable;
+    const handle = handle_opt.?;
+    defer c.libusb_close(handle);
 
-        if (!isPxManufacturer(handle, desc.iManufacturer)) return .unavailable;
+    if (!isPxManufacturer(handle, desc.iManufacturer)) return .unavailable;
 
-        if (c.libusb_claim_interface(handle, 0) != 0) return .busy;
-        defer _ = c.libusb_release_interface(handle, 0);
-        if (c.libusb_claim_interface(handle, 1) != 0) return .busy;
-        defer _ = c.libusb_release_interface(handle, 1);
+    if (c.libusb_claim_interface(handle, 0) != 0) return .busy;
+    defer _ = c.libusb_release_interface(handle, 0);
+    if (c.libusb_claim_interface(handle, 1) != 0) return .busy;
+    defer _ = c.libusb_release_interface(handle, 1);
 
-        const mode = usb.readRegister(handle, usb.REG_LOGIC_MODE, usb.DEFAULT_REGISTER_TIMEOUT_MS) catch return .unavailable;
-        return .{ .value = mode };
-    }
+    const mode = usb.readRegister(handle, usb.REG_LOGIC_MODE, usb.DEFAULT_REGISTER_TIMEOUT_MS) catch return .unavailable;
+    return .{ .value = mode };
 }
 
 fn isPxManufacturer(handle: *c.libusb_device_handle, manufacturer_index: u8) bool {
-    if (comptime builtin.is_test) {
-        return false;
-    } else {
-        if (manufacturer_index == 0) return false;
+    if (manufacturer_index == 0) return false;
 
-        var buf: [64]u8 = undefined;
-        const len = c.libusb_get_string_descriptor_ascii(handle, manufacturer_index, &buf, @intCast(buf.len));
-        return len >= 2 and buf[0] == 'P' and buf[1] == 'X';
-    }
+    var buf: [64]u8 = undefined;
+    const len = c.libusb_get_string_descriptor_ascii(handle, manufacturer_index, &buf, @intCast(buf.len));
+    return len >= 2 and buf[0] == 'P' and buf[1] == 'X';
 }
 
 test "modelLabelForIdentity matches PX Logic profiles" {

@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const caps = @import("caps.zig");
 const device = @import("device.zig");
 const usb = @import("usb.zig");
 const ringbuffer = @import("output/ringbuffer.zig");
@@ -138,7 +139,7 @@ fn loopSigIntHandler(_: i32) callconv(.c) void {
     loop_interrupt_requested.store(true, .release);
 }
 
-fn captureRegisterTargetBytes(sample_bytes: usize, transfer_size: usize, op_mode: usb.OperationMode) u64 {
+fn captureRegisterTargetBytes(sample_bytes: usize, transfer_size: usize, op_mode: caps.OperationMode) u64 {
     if (op_mode == .loop) {
         return std.math.maxInt(u64) - @as(u64, @intCast(transfer_size));
     }
@@ -702,11 +703,11 @@ test "captureRegisterTargetBytes uses max range for loop mode" {
 }
 
 test "targetBytesFromDurationMs converts milliseconds to byte target" {
-    const bytes_16ch = try targetBytesFromDurationMs(1, 24_000_000, 16, false);
-    try std.testing.expectEqual(@as(usize, 48_000), bytes_16ch);
+    const bytes_16ch = try targetBytesFromDurationMs(1, 25_000_000, 16, false);
+    try std.testing.expectEqual(@as(usize, 50_000), bytes_16ch);
 
-    const bytes_32ch = try targetBytesFromDurationMs(1, 24_000_000, 32, false);
-    try std.testing.expectEqual(@as(usize, 96_000), bytes_32ch);
+    const bytes_32ch = try targetBytesFromDurationMs(1, 25_000_000, 32, false);
+    try std.testing.expectEqual(@as(usize, 100_000), bytes_32ch);
 }
 
 test "targetBytesFromDurationMs aligns decode-cross to full cross stripes" {
@@ -720,7 +721,7 @@ test "resolveTargetBytes rejects duration with loop mode" {
         .output_target = .stdout,
         .sample_bytes = 4096,
         .duration_ms = 100,
-        .capture_profile = .{ .op_mode = .loop, .samplerate_hz = 24_000_000 },
+        .capture_profile = .{ .op_mode = .loop, .samplerate_hz = 25_000_000 },
     }, 16));
 }
 
@@ -729,7 +730,7 @@ test "resolveTargetBytes rejects simultaneous sample and duration targets" {
         .output_target = .stdout,
         .sample_bytes = 4096,
         .duration_ms = 100,
-        .capture_profile = .{ .op_mode = .buffer, .samplerate_hz = 24_000_000 },
+        .capture_profile = .{ .op_mode = .buffer, .samplerate_hz = 25_000_000 },
     }, 16));
 }
 
@@ -738,9 +739,9 @@ test "resolveTargetBytes accepts duration target with zero sample_bytes" {
         .output_target = .stdout,
         .sample_bytes = 0,
         .duration_ms = 1,
-        .capture_profile = .{ .op_mode = .buffer, .samplerate_hz = 24_000_000 },
+        .capture_profile = .{ .op_mode = .buffer, .samplerate_hz = 25_000_000 },
     }, 16);
-    try std.testing.expectEqual(@as(usize, 48_000), target);
+    try std.testing.expectEqual(@as(usize, 50_000), target);
 }
 
 test "requiresStrictChannelCountProbe is true for duration mode" {

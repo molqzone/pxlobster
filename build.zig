@@ -171,6 +171,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "pxlobster", .module = mod },
+                .{ .name = "pxresources", .module = resources_mod },
             },
         }),
     });

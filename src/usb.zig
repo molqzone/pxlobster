@@ -1,181 +1,7 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const caps = @import("caps.zig");
-const root = @import("root");
 
-const TestLibUsb = struct {
-    pub const LIBUSB_ERROR_INTERRUPTED: c_int = -10;
-    pub const LIBUSB_TRANSFER_COMPLETED: u32 = 0;
-    pub const LIBUSB_TRANSFER_ERROR: u32 = 1;
-    pub const LIBUSB_TRANSFER_TIMED_OUT: u32 = 2;
-    pub const LIBUSB_TRANSFER_CANCELLED: u32 = 3;
-    pub const LIBUSB_TRANSFER_STALL: u32 = 4;
-    pub const LIBUSB_TRANSFER_NO_DEVICE: u32 = 5;
-    pub const LIBUSB_TRANSFER_OVERFLOW: u32 = 6;
-    pub const LIBUSB_REQUEST_TYPE_VENDOR: u8 = 0x40;
-    pub const LIBUSB_ENDPOINT_OUT: u8 = 0x00;
-    pub const LIBUSB_ENDPOINT_IN: u8 = 0x80;
-    pub const LIBUSB_SPEED_HIGH: c_int = 3;
-    pub const LIBUSB_SPEED_SUPER: c_int = 4;
-
-    pub const libusb_context = opaque {};
-    pub const libusb_device = opaque {};
-    pub const libusb_device_handle = opaque {};
-    pub const libusb_device_descriptor = extern struct {
-        idVendor: u16 = 0,
-        idProduct: u16 = 0,
-        iManufacturer: u8 = 0,
-    };
-    pub const timeval = extern struct {
-        tv_sec: c_long = 0,
-        tv_usec: c_long = 0,
-    };
-
-    pub const libusb_transfer_cb_fn = *const fn (?*libusb_transfer) callconv(.c) void;
-    pub const libusb_transfer = extern struct {
-        status: u32 = 0,
-        actual_length: c_int = 0,
-        buffer: [*]u8 = undefined,
-        user_data: ?*anyopaque = null,
-        callback: ?libusb_transfer_cb_fn = null,
-        timeout: u32 = 0,
-        endpoint: u8 = 0,
-        dev_handle: ?*libusb_device_handle = null,
-        length: c_int = 0,
-    };
-
-    pub fn libusb_init(ctx: *?*libusb_context) c_int {
-        ctx.* = @ptrFromInt(1);
-        return 0;
-    }
-
-    pub fn libusb_exit(_: ?*libusb_context) void {}
-
-    pub fn libusb_get_device_list(_: *libusb_context, list: *[*c]?*libusb_device) isize {
-        list.* = @ptrFromInt(0);
-        return 0;
-    }
-
-    pub fn libusb_free_device_list(_: [*c]?*libusb_device, _: c_int) void {}
-
-    pub fn libusb_get_device_descriptor(_: *libusb_device, desc: *libusb_device_descriptor) c_int {
-        desc.* = .{};
-        return 0;
-    }
-
-    pub fn libusb_get_device_speed(_: *libusb_device) c_int {
-        return LIBUSB_SPEED_HIGH;
-    }
-
-    pub fn libusb_get_bus_number(_: *libusb_device) u8 {
-        return 0;
-    }
-
-    pub fn libusb_get_device_address(_: *libusb_device) u8 {
-        return 0;
-    }
-
-    pub fn libusb_open(_: *libusb_device, handle: *?*libusb_device_handle) c_int {
-        handle.* = @ptrFromInt(1);
-        return 0;
-    }
-
-    pub fn libusb_close(_: *libusb_device_handle) void {}
-
-    pub fn libusb_claim_interface(_: *libusb_device_handle, _: c_int) c_int {
-        return 0;
-    }
-
-    pub fn libusb_release_interface(_: *libusb_device_handle, _: c_int) c_int {
-        return 0;
-    }
-
-    pub fn libusb_get_string_descriptor_ascii(
-        _: *libusb_device_handle,
-        _: u8,
-        _: [*]u8,
-        _: c_int,
-    ) c_int {
-        return 0;
-    }
-
-    pub fn libusb_control_transfer(
-        _: *libusb_device_handle,
-        _: u8,
-        _: u8,
-        _: u16,
-        _: u16,
-        _: [*]u8,
-        _: u16,
-        _: u32,
-    ) c_int {
-        return 0;
-    }
-
-    pub fn libusb_bulk_transfer(
-        _: *libusb_device_handle,
-        _: u8,
-        _: [*]u8,
-        length: c_int,
-        transferred: *c_int,
-        _: u32,
-    ) c_int {
-        transferred.* = length;
-        return 0;
-    }
-
-    pub fn libusb_clear_halt(_: *libusb_device_handle, _: u8) c_int {
-        return 0;
-    }
-
-    pub fn libusb_alloc_transfer(_: c_int) ?*libusb_transfer {
-        return null;
-    }
-
-    pub fn libusb_free_transfer(_: *libusb_transfer) void {}
-
-    pub fn libusb_fill_bulk_transfer(
-        transfer: *libusb_transfer,
-        handle: *libusb_device_handle,
-        endpoint: u8,
-        buffer: [*]u8,
-        length: c_int,
-        callback: ?libusb_transfer_cb_fn,
-        user_data: ?*anyopaque,
-        timeout: u32,
-    ) void {
-        transfer.dev_handle = handle;
-        transfer.endpoint = endpoint;
-        transfer.buffer = buffer;
-        transfer.length = length;
-        transfer.callback = callback;
-        transfer.user_data = user_data;
-        transfer.timeout = timeout;
-    }
-
-    pub fn libusb_submit_transfer(_: *libusb_transfer) c_int {
-        return 0;
-    }
-
-    pub fn libusb_cancel_transfer(_: *libusb_transfer) c_int {
-        return 0;
-    }
-
-    pub fn libusb_handle_events_timeout_completed(
-        _: *libusb_context,
-        _: *timeval,
-        _: ?*c_int,
-    ) c_int {
-        return 0;
-    }
-};
-
-pub const c = if (@hasDecl(root, "libusb"))
-    root.libusb
-else if (builtin.is_test)
-    TestLibUsb
-else
-    @import("pxlobster").libusb;
+pub const c = @import("pxlobster").libusb;
 
 pub const BULK_EP_REG_OUT: u8 = 0x01;
 pub const BULK_EP_REG_IN: u8 = 0x81;
@@ -233,7 +59,6 @@ pub const DEFAULT_PWM_CLOCK_HZ: u32 = 120_000_000;
 pub const DEFAULT_THRESHOLD_PWM_FREQ_HZ: u32 = 10_000;
 pub const DEFAULT_VTH_VOLTS: f64 = 2.0;
 pub const DEFAULT_VTH_SCALE: f64 = 3.334;
-pub const DEFAULT_CAPTURE_SAMPLERATE_HZ: u64 = caps.default_capture_samplerate_hz;
 pub const MAX_CAPTURE_REGISTER_WRITES: usize = 26;
 
 pub const DeviceSnapshot = struct {
@@ -250,15 +75,9 @@ pub const ControlStatus = extern struct {
     real_pos: u32,
 };
 
-pub const OperationMode = enum {
-    buffer,
-    stream,
-    loop,
-};
-
 pub const CaptureProfile = struct {
-    op_mode: OperationMode = .buffer,
-    samplerate_hz: u64 = DEFAULT_CAPTURE_SAMPLERATE_HZ,
+    op_mode: caps.OperationMode = .buffer,
+    samplerate_hz: u64 = caps.default_capture_samplerate_hz,
     filter: u8 = 0,
     clock_edge: u8 = 0,
     ext_trigger_mode: u32 = DEFAULT_EXT_TRIGGER_MODE,
@@ -297,8 +116,6 @@ pub const CaptureRegisterScript = struct {
         return self.writes[0..self.len];
     }
 };
-
-pub const GpioTiming = caps.GpioTiming;
 
 pub fn listSnapshots(allocator: std.mem.Allocator, ctx: *c.libusb_context) ![]DeviceSnapshot {
     var device_list: [*c]?*c.libusb_device = undefined;
@@ -540,23 +357,6 @@ pub fn writeDataUpdate(
     }
 }
 
-pub fn prepareCaptureRegisters(
-    handle: *c.libusb_device_handle,
-    transfer_size: u32,
-    target_bytes: u64,
-    channel_count: u32,
-    timeout_ms: u32,
-) !void {
-    return prepareCaptureRegistersWithProfile(
-        handle,
-        transfer_size,
-        target_bytes,
-        channel_count,
-        .{},
-        timeout_ms,
-    );
-}
-
 pub fn prepareCaptureRegistersWithProfile(
     handle: *c.libusb_device_handle,
     transfer_size: u32,
@@ -595,7 +395,7 @@ pub fn buildCaptureRegisterScript(
     const stream_enable_flags = STREAM_ENABLE_FLAGS_BASE | stream_mask;
     const stream_enable_pulse_flags = stream_enable_flags | STREAM_ENABLE_PULSE_FLAG;
     const stream_run_flags = stream_mask | (@as(u32, profile.filter) << STREAM_FILTER_SHIFT);
-    const gpio_timing = try gpioTimingForSamplerate(profile.samplerate_hz);
+    const gpio_timing = try caps.gpioTimingForSamplerate(profile.samplerate_hz);
     const gpio_mode = gpio_timing.mode | (@as(u32, profile.clock_edge) << STREAM_FILTER_SHIFT);
     const pwm_max: u32 = DEFAULT_PWM_CLOCK_HZ / DEFAULT_THRESHOLD_PWM_FREQ_HZ;
     const threshold_vth: u32 = @intFromFloat((profile.vth_volts * 0.5 / DEFAULT_VTH_SCALE) * @as(f64, @floatFromInt(pwm_max)));
@@ -639,19 +439,11 @@ fn applyCaptureRegisterScript(
     }
 }
 
-pub fn streamMaskForMode(op_mode: OperationMode) u32 {
+pub fn streamMaskForMode(op_mode: caps.OperationMode) u32 {
     return switch (op_mode) {
         .buffer => 0,
         .stream, .loop => STREAM_MODE_BIT,
     };
-}
-
-pub fn isSupportedSamplerate(samplerate_hz: u64) bool {
-    return caps.isSupportedSamplerate(samplerate_hz);
-}
-
-pub fn gpioTimingForSamplerate(samplerate_hz: u64) !GpioTiming {
-    return caps.gpioTimingForSamplerate(samplerate_hz);
 }
 
 pub fn captureChannelMask(channel_count: u32) !u32 {
@@ -694,22 +486,6 @@ test "streamMaskForMode matches pxview op mode rules" {
     try std.testing.expectEqual(@as(u32, 0), streamMaskForMode(.buffer));
     try std.testing.expectEqual(STREAM_MODE_BIT, streamMaskForMode(.stream));
     try std.testing.expectEqual(STREAM_MODE_BIT, streamMaskForMode(.loop));
-}
-
-test "gpioTimingForSamplerate matches pxview table" {
-    try std.testing.expectEqualDeep(GpioTiming{ .mode = 2, .div = 0 }, try gpioTimingForSamplerate(250_000_000));
-    try std.testing.expectEqualDeep(GpioTiming{ .mode = 7, .div = 9 }, try gpioTimingForSamplerate(10_000_000));
-    try std.testing.expectEqualDeep(GpioTiming{ .mode = 7, .div = 3 }, try gpioTimingForSamplerate(24_000_000));
-    try std.testing.expectEqualDeep(GpioTiming{ .mode = 7, .div = 49_999 }, try gpioTimingForSamplerate(2_000));
-    try std.testing.expectError(error.InvalidSamplerate, gpioTimingForSamplerate(12_345));
-}
-
-test "isSupportedSamplerate accepts only pxview rates" {
-    try std.testing.expect(isSupportedSamplerate(250_000_000));
-    try std.testing.expect(isSupportedSamplerate(10_000_000));
-    try std.testing.expect(isSupportedSamplerate(24_000_000));
-    try std.testing.expect(!isSupportedSamplerate(0));
-    try std.testing.expect(!isSupportedSamplerate(12_345));
 }
 
 test "buildCaptureRegisterScript buffer mode produces pxview-compatible sequence" {
