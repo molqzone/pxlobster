@@ -73,16 +73,20 @@ jobs:
         run: |
           $msys_root = Join-Path $env:RUNNER_TEMP "setup-msys2"
           $mingw_lib = Join-Path $msys_root "mingw64/lib"
-          $mingw_bin = Join-Path $msys_root "mingw64/bin"
-          $usr_bin = Join-Path $msys_root "usr/bin"
           $libusb_link_file = Join-Path $mingw_lib "libusb-1.0.dll.a"
+
+          $mingw_root = Split-Path $mingw_lib -Parent
+          $mingw_bin = Join-Path $mingw_root "bin"
+          $usr_bin = Join-Path $msys_root "usr/bin"
 
           if (-not (Test-Path $libusb_link_file)) {
             $found = Get-ChildItem -Path $env:RUNNER_TEMP -Filter "libusb-1.0.dll.a" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($null -ne $found) {
               $libusb_link_file = $found.FullName
               $mingw_lib = $found.DirectoryName
-              $mingw_bin = Join-Path (Split-Path $mingw_lib -Parent) "bin"
+              $mingw_root = Split-Path $mingw_lib -Parent
+              $msys_root = Split-Path $mingw_root -Parent
+              $mingw_bin = Join-Path $mingw_root "bin"
               $usr_bin = Join-Path $msys_root "usr/bin"
             } else {
               throw "libusb import archive not found under RUNNER_TEMP"
