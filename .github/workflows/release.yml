@@ -4,42 +4,143 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  release-linux:
-    name: Release Linux x86_64
-    runs-on: ubuntu-latest
+  build:
+    name: Build ${{ matrix.platform }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            arch: x86_64
+            runs_on: ubuntu-latest
+            zig_target: x86_64-linux-gnu
+            archive_ext: tar.gz
+            bin_path: zig-out/bin/pxlobster
+          - platform: linux
+            arch: aarch64
+            runs_on: ubuntu-24.04-arm
+            zig_target: aarch64-linux-gnu
+            archive_ext: tar.gz
+            bin_path: zig-out/bin/pxlobster
+          - platform: macos
+            arch: x86_64
+            runs_on: macos-13
+            zig_target: x86_64-macos
+            archive_ext: tar.gz
+            bin_path: zig-out/bin/pxlobster
+          - platform: macos
+            arch: aarch64
+            runs_on: macos-14
+            zig_target: aarch64-macos
+            archive_ext: tar.gz
+            bin_path: zig-out/bin/pxlobster
+          - platform: windows
+            arch: x86_64
+            runs_on: windows-latest
+            zig_target: x86_64-windows-gnu
+            archive_ext: zip
+            bin_path: zig-out/bin/pxlobster.exe
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Install libusb
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libusb-1.0-0-dev
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
 
-      - name: Build ReleaseFast Binary
-        run: zig build -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseFast
+      - name: Install libusb (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libusb-1.0-0-dev
 
-      - name: Package Artifacts
+      - name: Install libusb (macOS)
+        if: matrix.platform == 'macos'
+        run: |
+          brew update
+          brew install libusb
+
+      - name: Install libusb (Windows, MinGW)
+        if: matrix.platform == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          install: mingw-w64-x86_64-libusb
+
+      - name: Export MinGW library path (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          "LIBRARY_PATH=C:/msys64/mingw64/lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build ReleaseFast
+        run: zig build -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseFast
+
+      - name: Package Artifacts (Unix)
+        if: matrix.platform != 'windows'
         run: |
           mkdir -p dist
-          install -m 755 zig-out/bin/pxlobster dist/pxlobster-linux-x86_64
-          sha256sum dist/pxlobster-linux-x86_64 > dist/SHA256SUMS.txt
+          base="pxlobster-${{ matrix.platform }}-${{ matrix.arch }}"
+          cp "${{ matrix.bin_path }}" "dist/${base}"
+          tar -C dist -czf "dist/${base}.tar.gz" "${base}"
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          dist = Path("dist")
+          for p in dist.glob("*.tar.gz"):
+              h = hashlib.sha256(p.read_bytes()).hexdigest()
+              (dist / f"{p.name}.sha256").write_text(f"{h}  {p.name}\n", encoding="utf-8")
+          PY
+
+      - name: Package Artifacts (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "dist" -Force | Out-Null
+          $base = "pxlobster-${{ matrix.platform }}-${{ matrix.arch }}"
+          Copy-Item "${{ matrix.bin_path }}" "dist/${base}.exe"
+          Compress-Archive -Path "dist/${base}.exe" -DestinationPath "dist/${base}.zip" -Force
+          python -c "import hashlib, pathlib; p = pathlib.Path('dist/${base}.zip'); h = hashlib.sha256(p.read_bytes()).hexdigest(); pathlib.Path('dist/${base}.zip.sha256').write_text(f'{h}  {p.name}\\n', encoding='utf-8')"
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Build Combined SHA256SUMS
+        run: |
+          find dist -type f -name "*.sha256" -print0 | sort -z | xargs -0 cat > dist/SHA256SUMS.txt
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/pxlobster-linux-x86_64
-            dist/SHA256SUMS.txt
           generate_release_notes: true
+          files: |
+            dist/SHA256SUMS.txt
+            dist/*.tar.gz
+            dist/*.zip
