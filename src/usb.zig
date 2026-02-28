@@ -1,7 +1,181 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const caps = @import("caps.zig");
+const root = @import("root");
 
-pub const c = @import("pxlobster").libusb;
+const TestLibUsb = struct {
+    pub const LIBUSB_ERROR_INTERRUPTED: c_int = -10;
+    pub const LIBUSB_TRANSFER_COMPLETED: u32 = 0;
+    pub const LIBUSB_TRANSFER_ERROR: u32 = 1;
+    pub const LIBUSB_TRANSFER_TIMED_OUT: u32 = 2;
+    pub const LIBUSB_TRANSFER_CANCELLED: u32 = 3;
+    pub const LIBUSB_TRANSFER_STALL: u32 = 4;
+    pub const LIBUSB_TRANSFER_NO_DEVICE: u32 = 5;
+    pub const LIBUSB_TRANSFER_OVERFLOW: u32 = 6;
+    pub const LIBUSB_REQUEST_TYPE_VENDOR: u8 = 0x40;
+    pub const LIBUSB_ENDPOINT_OUT: u8 = 0x00;
+    pub const LIBUSB_ENDPOINT_IN: u8 = 0x80;
+    pub const LIBUSB_SPEED_HIGH: c_int = 3;
+    pub const LIBUSB_SPEED_SUPER: c_int = 4;
+
+    pub const libusb_context = opaque {};
+    pub const libusb_device = opaque {};
+    pub const libusb_device_handle = opaque {};
+    pub const libusb_device_descriptor = extern struct {
+        idVendor: u16 = 0,
+        idProduct: u16 = 0,
+        iManufacturer: u8 = 0,
+    };
+    pub const timeval = extern struct {
+        tv_sec: c_long = 0,
+        tv_usec: c_long = 0,
+    };
+
+    pub const libusb_transfer_cb_fn = *const fn (?*libusb_transfer) callconv(.c) void;
+    pub const libusb_transfer = extern struct {
+        status: u32 = 0,
+        actual_length: c_int = 0,
+        buffer: [*]u8 = undefined,
+        user_data: ?*anyopaque = null,
+        callback: ?libusb_transfer_cb_fn = null,
+        timeout: u32 = 0,
+        endpoint: u8 = 0,
+        dev_handle: ?*libusb_device_handle = null,
+        length: c_int = 0,
+    };
+
+    pub fn libusb_init(ctx: *?*libusb_context) c_int {
+        ctx.* = @ptrFromInt(1);
+        return 0;
+    }
+
+    pub fn libusb_exit(_: ?*libusb_context) void {}
+
+    pub fn libusb_get_device_list(_: *libusb_context, list: *[*c]?*libusb_device) isize {
+        list.* = @ptrFromInt(0);
+        return 0;
+    }
+
+    pub fn libusb_free_device_list(_: [*c]?*libusb_device, _: c_int) void {}
+
+    pub fn libusb_get_device_descriptor(_: *libusb_device, desc: *libusb_device_descriptor) c_int {
+        desc.* = .{};
+        return 0;
+    }
+
+    pub fn libusb_get_device_speed(_: *libusb_device) c_int {
+        return LIBUSB_SPEED_HIGH;
+    }
+
+    pub fn libusb_get_bus_number(_: *libusb_device) u8 {
+        return 0;
+    }
+
+    pub fn libusb_get_device_address(_: *libusb_device) u8 {
+        return 0;
+    }
+
+    pub fn libusb_open(_: *libusb_device, handle: *?*libusb_device_handle) c_int {
+        handle.* = @ptrFromInt(1);
+        return 0;
+    }
+
+    pub fn libusb_close(_: *libusb_device_handle) void {}
+
+    pub fn libusb_claim_interface(_: *libusb_device_handle, _: c_int) c_int {
+        return 0;
+    }
+
+    pub fn libusb_release_interface(_: *libusb_device_handle, _: c_int) c_int {
+        return 0;
+    }
+
+    pub fn libusb_get_string_descriptor_ascii(
+        _: *libusb_device_handle,
+        _: u8,
+        _: [*]u8,
+        _: c_int,
+    ) c_int {
+        return 0;
+    }
+
+    pub fn libusb_control_transfer(
+        _: *libusb_device_handle,
+        _: u8,
+        _: u8,
+        _: u16,
+        _: u16,
+        _: [*]u8,
+        _: u16,
+        _: u32,
+    ) c_int {
+        return 0;
+    }
+
+    pub fn libusb_bulk_transfer(
+        _: *libusb_device_handle,
+        _: u8,
+        _: [*]u8,
+        length: c_int,
+        transferred: *c_int,
+        _: u32,
+    ) c_int {
+        transferred.* = length;
+        return 0;
+    }
+
+    pub fn libusb_clear_halt(_: *libusb_device_handle, _: u8) c_int {
+        return 0;
+    }
+
+    pub fn libusb_alloc_transfer(_: c_int) ?*libusb_transfer {
+        return null;
+    }
+
+    pub fn libusb_free_transfer(_: *libusb_transfer) void {}
+
+    pub fn libusb_fill_bulk_transfer(
+        transfer: *libusb_transfer,
+        handle: *libusb_device_handle,
+        endpoint: u8,
+        buffer: [*]u8,
+        length: c_int,
+        callback: ?libusb_transfer_cb_fn,
+        user_data: ?*anyopaque,
+        timeout: u32,
+    ) void {
+        transfer.dev_handle = handle;
+        transfer.endpoint = endpoint;
+        transfer.buffer = buffer;
+        transfer.length = length;
+        transfer.callback = callback;
+        transfer.user_data = user_data;
+        transfer.timeout = timeout;
+    }
+
+    pub fn libusb_submit_transfer(_: *libusb_transfer) c_int {
+        return 0;
+    }
+
+    pub fn libusb_cancel_transfer(_: *libusb_transfer) c_int {
+        return 0;
+    }
+
+    pub fn libusb_handle_events_timeout_completed(
+        _: *libusb_context,
+        _: *timeval,
+        _: ?*c_int,
+    ) c_int {
+        return 0;
+    }
+};
+
+pub const c = if (@hasDecl(root, "libusb"))
+    root.libusb
+else if (builtin.is_test)
+    TestLibUsb
+else
+    @import("pxlobster").libusb;
 
 pub const BULK_EP_REG_OUT: u8 = 0x01;
 pub const BULK_EP_REG_IN: u8 = 0x81;

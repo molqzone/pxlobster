@@ -1,5 +1,5 @@
 const std = @import("std");
-const ringbuffer = @import("../ringbuffer.zig");
+const ringbuffer = @import("ringbuffer.zig");
 
 pub const writer_chunk_bytes: usize = 64 * 1024;
 const max_supported_channels: usize = 32;

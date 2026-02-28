@@ -161,7 +161,7 @@ pub fn deinitParsedCommand(parsed: *ParsedCommand, allocator: std.mem.Allocator)
     deinitCommand(&parsed.command, allocator);
 }
 
-pub fn deinitCommand(cmd: *Command, allocator: std.mem.Allocator) void {
+fn deinitCommand(cmd: *Command, allocator: std.mem.Allocator) void {
     switch (cmd.*) {
         .capture => |*capture_cmd| {
             if (!capture_cmd.owns_output_path) return;

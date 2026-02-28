@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const device = @import("device.zig");
 const usb = @import("usb.zig");
-const ringbuffer = @import("ringbuffer.zig");
+const ringbuffer = @import("output/ringbuffer.zig");
 const stream = @import("output/stream.zig");
 const session = @import("output/session.zig");
 const srzip = @import("output/srzip.zig");
@@ -226,7 +226,7 @@ fn validateTriggerMasksForChannelCount(profile: usb.CaptureProfile, channel_coun
 }
 
 fn requiresStrictChannelCountProbe(options: CaptureOptions) bool {
-    return options.duration_ms != null or options.strict_channel_count_probe;
+    return options.duration_ms != null or options.strict_channel_count_probe or options.decode_cross;
 }
 
 pub fn runCapture(
@@ -756,6 +756,14 @@ test "requiresStrictChannelCountProbe is true for explicit trigger mode" {
         .output_target = .stdout,
         .sample_bytes = 4096,
         .strict_channel_count_probe = true,
+    }));
+}
+
+test "requiresStrictChannelCountProbe is true for decode-cross mode" {
+    try std.testing.expect(requiresStrictChannelCountProbe(.{
+        .output_target = .stdout,
+        .sample_bytes = 4096,
+        .decode_cross = true,
     }));
 }
 
