@@ -1,6 +1,6 @@
 # PXLobster
 
-[中文](README.md) | [English](README.en.md)
+[简体中文](README.md) | [English](README.en.md)
 
 [![License](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Language](https://img.shields.io/github/languages/top/molqzone/pxlobster)](https://github.com/molqzone/pxlobster)
@@ -8,25 +8,25 @@
 [![GitHub Forks](https://img.shields.io/github/forks/molqzone/pxlobster)](https://github.com/molqzone/pxlobster/network/members)
 [![GitHub Issues](https://img.shields.io/github/issues/molqzone/pxlobster)](https://github.com/molqzone/pxlobster/issues)
 
-PXLobster 是一个面向 PXLogic 逻辑分析仪的命令行上位机程序。
+PXLobster is a command-line host tool for PXLogic logic analyzers.
 
-## 特性
+## Features
 
-- 设备扫描：`--scan`
-- 固件/位流注入：`--prime-fw`
-- 采集输出：`bin` / `sr`
-- 目标控制：`--samples`（字节）或 `--time`（毫秒）
-- 触发配置：`-t/--triggers`
-- 管道输出：`--stdout`（仅 `bin`）
+- Device scan: `--scan`
+- Firmware/bitstream injection: `--prime-fw`
+- Capture output: `bin` / `sr`
+- Target control: `--samples` (bytes) or `--time` (ms)
+- Trigger configuration: `-t/--triggers`
+- Pipe output: `--stdout` (for `bin` only)
 
-## 构建
+## Build
 
-环境要求：
+Requirements:
 
 - Zig `0.15.2+`
-- 系统 `libusb-1.0` 运行库
+- System `libusb-1.0` runtime
 
-## 用法
+## Usage
 
 ```text
 pxlobster [--verbose] --scan
@@ -35,32 +35,32 @@ pxlobster [--verbose] -o <path> --format <bin|sr> [--samples <bytes>|--time <ms>
 pxlobster [--verbose] --stdout --format <bin> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
 ```
 
-常用示例：
+Common examples:
 
 ```bash
-# 扫描设备
+# Scan devices
 pxlobster --scan
 
-# 注入固件
+# Inject firmware
 pxlobster --prime-fw
 
-# 采集到 bin 文件
+# Capture to a bin file
 pxlobster -o /tmp/capture.bin --format bin --samples 65536
 
-# 采集到 sr 文件
+# Capture to an sr file
 pxlobster -o /tmp/capture.sr --format sr --samples 1048576 --samplerate 25000000
 
-# stdout 管道输出（bin）
+# Stdout piping (bin)
 pxlobster --stdout --format bin --samples 65536 > /tmp/capture_stdout.bin
 ```
 
-注意：
+Notes:
 
-- `--format` 必须显式指定
-- `--samples` 与 `--time` 互斥
-- `--stdout` 与 `--output-file` 互斥
-- `--stdout` 仅支持 `--format bin`
+- `--format` must be specified explicitly
+- `--samples` and `--time` are mutually exclusive
+- `--stdout` and `--output-file` are mutually exclusive
+- `--stdout` supports `--format bin` only
 
 ## License
 
-本项目采用 GNU General Public License v3.0（GPL-3.0）许可证，详见 [LICENSE](LICENSE)。
+This project is licensed under the GNU General Public License v3.0 (GPL-3.0). See [LICENSE](LICENSE).
