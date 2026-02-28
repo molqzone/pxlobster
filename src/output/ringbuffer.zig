@@ -1,7 +1,9 @@
 const std = @import("std");
 
+/// 采集生产者/消费者缓冲默认容量（字节） / Default byte capacity used by capture producer/consumer buffering.
 pub const default_capacity_bytes: usize = 64 * 1024 * 1024;
 
+/// 单生产者/单消费者字节环形缓冲，并统计丢弃字节 / Single-producer/single-consumer byte ring buffer with drop accounting.
 pub const RingBuffer = struct {
     allocator: std.mem.Allocator,
     storage: []u8,
@@ -10,6 +12,7 @@ pub const RingBuffer = struct {
     read_index: std.atomic.Value(usize),
     dropped_bytes: std.atomic.Value(u64),
 
+    /// 按指定容量为 ring buffer 分配存储 / Allocates storage for a ring buffer with the requested capacity.
     pub fn init(allocator: std.mem.Allocator, capacity: usize) !RingBuffer {
         if (capacity == 0) return error.InvalidRingBufferCapacity;
         return .{
@@ -22,29 +25,35 @@ pub const RingBuffer = struct {
         };
     }
 
+    /// 使用 `default_capacity_bytes` 分配 ring buffer / Allocates a ring buffer using `default_capacity_bytes`.
     pub fn initDefault(allocator: std.mem.Allocator) !RingBuffer {
         return init(allocator, default_capacity_bytes);
     }
 
+    /// 释放已分配存储并使结构体失效 / Releases allocated storage and invalidates the struct.
     pub fn deinit(self: *RingBuffer) void {
         self.allocator.free(self.storage);
         self.* = undefined;
     }
 
+    /// 返回消费者当前可读字节数 / Returns bytes currently readable by the consumer.
     pub fn available(self: *const RingBuffer) usize {
         const write = self.write_index.load(.acquire);
         const read = self.read_index.load(.acquire);
         return write - read;
     }
 
+    /// 返回生产者当前可写空闲字节数 / Returns free bytes available for the producer.
     pub fn freeSpace(self: *const RingBuffer) usize {
         return self.capacity - self.available();
     }
 
+    /// 返回因溢出累计丢弃的字节数 / Returns the cumulative count of dropped bytes due to overflow.
     pub fn dropped(self: *const RingBuffer) u64 {
         return self.dropped_bytes.load(.acquire);
     }
 
+    /// 尽量写入可容纳字节，超出的字节计入 dropped / Pushes as many bytes as fit; extra bytes are counted as dropped.
     pub fn push(self: *RingBuffer, data: []const u8) usize {
         if (data.len == 0) return 0;
 
@@ -73,6 +82,7 @@ pub const RingBuffer = struct {
         return writable;
     }
 
+    /// 从缓冲区最多弹出 `out.len` 字节并推进读指针 / Pops up to `out.len` bytes from the buffer and advances read cursor.
     pub fn pop(self: *RingBuffer, out: []u8) usize {
         if (out.len == 0) return 0;
 

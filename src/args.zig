@@ -2,14 +2,17 @@ const std = @import("std");
 const caps = @import("caps.zig");
 const clap = @import("clap");
 
+/// 默认采集字节数（当 `--samples` 与 `--time` 都未设置时使用） / Default capture size used when neither `--samples` nor `--time` is set.
 pub const default_capture_samples_bytes: usize = 8 * 1024 * 1024;
 const default_capture_samplerate_hz: u64 = caps.default_capture_samplerate_hz;
 
+/// 调用方显式选择的输出编码 / Output encoding chosen by the caller.
 pub const OutputFormat = enum {
     bin,
     sr,
 };
 
+/// 采集数据输出目标位置 / Capture sink location.
 pub const OutputTarget = union(enum) {
     file_path: []const u8,
     stdout,
@@ -24,6 +27,7 @@ pub const TriggerMasks = struct {
     trigger_fall: u32 = 0,
 };
 
+/// 供运行时采集逻辑直接消费的完整命令结构 / Fully resolved capture command consumed by runtime capture logic.
 pub const CaptureCommand = struct {
     output_target: OutputTarget,
     output_format: OutputFormat = .bin,
@@ -40,11 +44,13 @@ pub const CaptureCommand = struct {
     owns_output_path: bool = false,
 };
 
+/// 命令解析结果包装，携带选中的子命令与全局标志 / Parse result wrapper carrying the selected command and global flags.
 pub const ParsedCommand = struct {
     command: Command,
     verbose: bool = false,
 };
 
+/// 顶层 CLI 子命令选择 / Top-level CLI command selection.
 pub const Command = union(enum) {
     scan,
     prime_fw,
@@ -81,6 +87,7 @@ pub fn parseArgs() !ParsedCommand {
     return parsed;
 }
 
+/// 测试/辅助解析入口：接收显式 argv 切片和分配器 / Test/helper parser that accepts an explicit argv slice and allocator.
 pub fn parseArgsFromSlice(args: []const []const u8, allocator: std.mem.Allocator) !ParsedCommand {
     const clap_args = if (args.len > 0) args[1..] else args;
     var iter = clap.args.SliceIterator{ .args = clap_args };
@@ -96,6 +103,7 @@ pub fn parseArgsFromSlice(args: []const []const u8, allocator: std.mem.Allocator
     return parsed;
 }
 
+/// 释放解析结果中由堆分配并归当前命令持有的字段 / Releases heap-owned fields inside a parsed command.
 pub fn deinitParsedCommand(parsed: *ParsedCommand, allocator: std.mem.Allocator) void {
     deinitCommand(&parsed.command, allocator);
 }
@@ -217,11 +225,13 @@ fn commandFromParsedArgs(parsed_args: anytype) !ParsedCommand {
     };
 }
 
+/// 对可重复参数返回最后一次出现的值 / Returns the last parsed value for options that may be repeated.
 fn lastValue(comptime T: type, values: []const T) ?T {
     if (values.len == 0) return null;
     return values[values.len - 1];
 }
 
+/// 将采集相关参数归一化并校验后构建 `CaptureCommand` / Normalizes capture-related flags into a validated `CaptureCommand`.
 fn buildCaptureCommand(
     output_path: ?[]const u8,
     output_stdout: bool,
@@ -275,6 +285,7 @@ fn buildCaptureCommand(
     return error.InvalidArgument;
 }
 
+/// 复制文件路径输出目标，使其由调用方分配器统一持有与释放 / Duplicates any file-path output target so caller-controlled allocator owns it.
 fn detachOutputPathIfNeeded(cmd: *Command, allocator: std.mem.Allocator) !void {
     switch (cmd.*) {
         .capture => |*capture_cmd| switch (capture_cmd.output_target) {
@@ -289,6 +300,7 @@ fn detachOutputPathIfNeeded(cmd: *Command, allocator: std.mem.Allocator) !void {
     }
 }
 
+/// 解析 `--mode` 选项值 / Parses `--mode` option values.
 fn parseOpMode(value: []const u8) ?OperationMode {
     if (std.mem.eql(u8, value, "buffer")) return .buffer;
     if (std.mem.eql(u8, value, "stream")) return .stream;
@@ -296,12 +308,14 @@ fn parseOpMode(value: []const u8) ?OperationMode {
     return null;
 }
 
+/// 解析 `--format` 选项值 / Parses `--format` option values.
 fn parseOutputFormat(value: []const u8) ?OutputFormat {
     if (std.mem.eql(u8, value, "bin")) return .bin;
     if (std.mem.eql(u8, value, "sr")) return .sr;
     return null;
 }
 
+/// 解析 `-t/--triggers` 规则串，格式为 `channel=state` 条目 / Parses `-t/--triggers` spec in the form `channel=state` entries.
 fn parseTriggerSpec(value: []const u8) ?TriggerMasks {
     const trimmed = std.mem.trim(u8, value, " \t\r\n");
     if (trimmed.len == 0) return null;
@@ -343,11 +357,13 @@ fn parseTriggerSpec(value: []const u8) ?TriggerMasks {
     return masks;
 }
 
+/// 解析采样率并强制为受支持的离散值 / Parses samplerate string and enforces supported discrete values.
 fn parseSamplerate(value: []const u8) ?u64 {
     const samplerate = std.fmt.parseInt(u64, value, 10) catch return null;
     return parseSamplerateValue(samplerate);
 }
 
+/// 按 PXView 兼容离散集合校验采样率 / Validates samplerate against PXView-compatible discrete set.
 fn parseSamplerateValue(samplerate: u64) ?u64 {
     if (!caps.isSupportedSamplerate(samplerate)) return null;
     return samplerate;

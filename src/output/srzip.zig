@@ -1,16 +1,19 @@
 const std = @import("std");
 const session = @import("session.zig");
 
+/// ZIP 条目载荷来源类型 / Source variants for each ZIP entry payload.
 pub const ZipEntrySource = union(enum) {
     bytes: []const u8,
     file_path: []const u8,
 };
 
+/// 需要写入输出 ZIP 的单个文件条目 / One file entry to be written into the output ZIP.
 pub const ZipEntry = struct {
     name: []const u8,
     source: ZipEntrySource,
 };
 
+/// 从原始采集文件生成 sigrok `.sr` 的输入参数 / Inputs for generating a sigrok `.sr` file from a raw capture file.
 pub const WriteSessionFromRawOptions = struct {
     output_path: []const u8,
     raw_path: []const u8,
@@ -52,6 +55,7 @@ const WriteContext = struct {
     }
 };
 
+/// 构建最小 sigrok 兼容归档（含 version、metadata、raw 数据） / Builds a minimal sigrok-compatible archive containing version, metadata, and raw logic data.
 pub fn writeSessionFromRawFile(allocator: std.mem.Allocator, options: WriteSessionFromRawOptions) !void {
     const metadata = try session.initMetadata(options.samplerate_hz, options.channel_count);
     const metadata_text = try session.renderMetadata(allocator, metadata);
@@ -66,6 +70,7 @@ pub fn writeSessionFromRawFile(allocator: std.mem.Allocator, options: WriteSessi
     try writeSessionZip(options.output_path, entries[0..]);
 }
 
+/// 写入全部条目，以及中央目录和 EOCD 记录 / Writes all entries plus central directory and EOCD record.
 fn writeSessionZip(output_path: []const u8, entries: []const ZipEntry) !void {
     if (entries.len == 0) return error.EmptyEntryList;
     if (entries.len > std.math.maxInt(u16)) return error.ZipTooManyEntries;
@@ -99,6 +104,7 @@ fn writeSessionZip(output_path: []const u8, entries: []const ZipEntry) !void {
     try output_file.sync();
 }
 
+/// 序列化单个条目，并返回中央目录所需偏移和校验信息 / Serializes one entry and returns offsets/checksums for central directory emission.
 fn writeEntry(ctx: *WriteContext, entry: ZipEntry) !EntrySummary {
     if (entry.name.len == 0) return error.InvalidEntryName;
     if (entry.name.len > std.math.maxInt(u16)) return error.EntryNameTooLong;
@@ -144,6 +150,7 @@ fn writeEntry(ctx: *WriteContext, entry: ZipEntry) !EntrySummary {
     return summary;
 }
 
+/// 从内存字节写出 stored-deflate 数据块 / Emits stored-deflate payload blocks from in-memory bytes.
 fn writeDeflateStoredFromSlice(file: std.fs.File, data: []const u8) !void {
     if (data.len == 0) {
         try writeDeflateStoredBlock(file, true, "");
@@ -159,6 +166,7 @@ fn writeDeflateStoredFromSlice(file: std.fs.File, data: []const u8) !void {
     }
 }
 
+/// 以 stored-deflate 块流式写文件并计算 CRC32 / Streams a file as stored-deflate blocks while calculating CRC32.
 fn writeDeflateStoredFromFile(file: std.fs.File, raw_file: std.fs.File, crc: *std.hash.Crc32) !u64 {
     const raw_stat = try raw_file.stat();
     const total_size = raw_stat.size;
@@ -184,6 +192,7 @@ fn writeDeflateStoredFromFile(file: std.fs.File, raw_file: std.fs.File, crc: *st
     return total_size;
 }
 
+/// 精确读取 `dest.len` 字节，否则以流结束错误失败 / Reads exactly `dest.len` bytes or fails with end-of-stream.
 fn readExactly(file: std.fs.File, dest: []u8) !void {
     var read_len: usize = 0;
     while (read_len < dest.len) {
@@ -193,6 +202,7 @@ fn readExactly(file: std.fs.File, dest: []u8) !void {
     }
 }
 
+/// 写出一个 RFC1951 stored 块（不压缩，按 ZIP deflate 封装） / Emits one RFC1951 stored block (no compression, framed for ZIP deflate method).
 fn writeDeflateStoredBlock(file: std.fs.File, final: bool, data: []const u8) !void {
     if (data.len > max_stored_block_len) return error.DeflateBlockTooLarge;
 
@@ -206,6 +216,7 @@ fn writeDeflateStoredBlock(file: std.fs.File, final: bool, data: []const u8) !vo
     try file.writeAll(data);
 }
 
+/// 写 ZIP 本地文件头，CRC 与大小先写占位值 / Writes ZIP local file header with placeholders for CRC and sizes.
 fn writeLocalFileHeader(file: std.fs.File, name: []const u8, crc32: u32, compressed_size: u32, uncompressed_size: u32) !void {
     var header: [LocalFileHeaderSize]u8 = [_]u8{0} ** LocalFileHeaderSize;
     writeU32LE(header[0..4], local_file_header_signature);
@@ -224,6 +235,7 @@ fn writeLocalFileHeader(file: std.fs.File, name: []const u8, crc32: u32, compres
     try file.writeAll(name);
 }
 
+/// 将 CRC 与大小字段回填到已写入的本地文件头 / Patches CRC and size fields back into an already-written local header.
 fn patchLocalFileHeader(file: std.fs.File, summary: EntrySummary) !void {
     var patch: [12]u8 = [_]u8{0} ** 12;
     writeU32LE(patch[0..4], summary.crc32);
@@ -234,6 +246,7 @@ fn patchLocalFileHeader(file: std.fs.File, summary: EntrySummary) !void {
     try file.pwriteAll(&patch, patch_offset);
 }
 
+/// 为已写出的本地条目写一条中央目录头 / Writes one central directory header for a previously emitted local entry.
 fn writeCentralDirectoryHeader(file: std.fs.File, summary: EntrySummary) !void {
     var header: [CentralDirectoryHeaderSize]u8 = [_]u8{0} ** CentralDirectoryHeaderSize;
     writeU32LE(header[0..4], central_directory_header_signature);
@@ -258,6 +271,7 @@ fn writeCentralDirectoryHeader(file: std.fs.File, summary: EntrySummary) !void {
     try file.writeAll(summary.name);
 }
 
+/// 写入 ZIP 末尾 EOCD（End of Central Directory）记录 / Writes the ZIP end-of-central-directory record.
 fn writeEndOfCentralDirectory(file: std.fs.File, record_count: u16, central_directory_size: u32, central_directory_offset: u32) !void {
     var record: [EndOfCentralDirectorySize]u8 = [_]u8{0} ** EndOfCentralDirectorySize;
     writeU32LE(record[0..4], end_of_central_directory_signature);
@@ -271,10 +285,12 @@ fn writeEndOfCentralDirectory(file: std.fs.File, record_count: u16, central_dire
     try file.writeAll(&record);
 }
 
+/// 以 little-endian 顺序写入 u16 / Writes u16 in little-endian order.
 fn writeU16LE(dst: []u8, value: u16) void {
     std.mem.writeInt(u16, dst[0..2], value, .little);
 }
 
+/// 以 little-endian 顺序写入 u32 / Writes u32 in little-endian order.
 fn writeU32LE(dst: []u8, value: u32) void {
     std.mem.writeInt(u32, dst[0..4], value, .little);
 }

@@ -5,6 +5,7 @@ const usb = @import("usb.zig");
 const device = @import("device.zig");
 const c = usb.c;
 
+/// CLI 入口：解析参数、分发命令并将失败映射到退出码 / CLI entry point: parse args, dispatch command, and map failures to exit codes.
 pub fn main() !void {
     var stdout_buffer: [4096]u8 = undefined;
     var stderr_buffer: [4096]u8 = undefined;
@@ -40,6 +41,7 @@ const LogicModeProbe = union(enum) {
     unavailable,
 };
 
+/// 打印 CLI 用法与参数说明 / Prints CLI usage and option descriptions.
 fn printUsage(writer: anytype) !void {
     try writer.writeAll(
         \\Usage:
@@ -72,11 +74,13 @@ fn printUsage(writer: anytype) !void {
     );
 }
 
+/// 仅在 `--verbose` 打开时输出调试日志 / Emits verbose logs only when `--verbose` is enabled.
 fn verboseLog(enabled: bool, writer: anytype, comptime fmt: []const u8, values: anytype) !void {
     if (!enabled) return;
     try writer.print(fmt, values);
 }
 
+/// 枚举已连接设备并打印受支持 PX Logic 识别信息 / Enumerates connected devices and prints supported PX Logic identities.
 fn scanUsbDevices(stdout: anytype, stderr: anytype, verbose: bool) !void {
     try verboseLog(verbose, stderr, "verbose: scan start\n", .{});
     var ctx: ?*c.libusb_context = null;
@@ -122,6 +126,7 @@ fn scanUsbDevices(stdout: anytype, stderr: anytype, verbose: bool) !void {
     }
 }
 
+/// 向受支持 PX Logic 设备上传固件与位流 / Uploads firmware/bitstream to supported PX Logic devices.
 fn primeFirmware(stdout: anytype, stderr: anytype, verbose: bool) !void {
     try verboseLog(verbose, stderr, "verbose: prime-fw start\n", .{});
     var ctx: ?*c.libusb_context = null;
@@ -171,6 +176,7 @@ fn primeFirmware(stdout: anytype, stderr: anytype, verbose: bool) !void {
     }
 }
 
+/// 将解析后的采集命令转换为运行参数并执行采集 / Converts parsed capture command to runtime options and executes capture.
 fn runCapture(parsed: args.ParsedCommand, stdout: anytype, stderr: anytype) !void {
     const cmd = switch (parsed.command) {
         .capture => |capture_cmd| capture_cmd,

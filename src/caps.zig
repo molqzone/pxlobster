@@ -1,23 +1,31 @@
 const std = @import("std");
 
+/// 默认采样率（当 CLI 未显式覆盖采集速度时使用） / Default samplerate used when the CLI does not override capture speed.
 pub const default_capture_samplerate_hz: u64 = 250_000_000;
 
+/// 设备采集工作模式 / Device capture operation mode.
 pub const OperationMode = enum {
+    /// 采集固定窗口后停止 / Acquire a bounded capture window and stop.
     buffer,
+    /// 在主机侧限制下持续传输样本 / Keep transferring samples while respecting host-side limits.
     stream,
+    /// 持续采集直到被中断 / Continuous capture until interrupted.
     loop,
 };
 
+/// PX 硬件寄存器需要的 GPIO 模式与分频组合 / Encodes the GPIO mode/divider pair expected by PX hardware registers.
 pub const GpioTiming = struct {
     mode: u32,
     div: u32,
 };
 
+/// 当给定采样率可映射到受支持 GPIO 时序时返回 true / Returns true when the provided samplerate maps to a supported GPIO timing.
 pub fn isSupportedSamplerate(samplerate_hz: u64) bool {
     _ = gpioTimingForSamplerate(samplerate_hz) catch return false;
     return true;
 }
 
+/// 将 Hz 采样率转换为精确 GPIO 模式与分频寄存器值 / Converts a samplerate in Hz to the exact GPIO mode/divider register values.
 pub fn gpioTimingForSamplerate(samplerate_hz: u64) !GpioTiming {
     return switch (samplerate_hz) {
         1_000_000_000 => .{ .mode = 0, .div = 0 },

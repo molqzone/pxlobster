@@ -1,10 +1,12 @@
 const std = @import("std");
 const ringbuffer = @import("ringbuffer.zig");
 
+/// 写线程从 ring buffer 拉取数据时使用的块大小 / Writer-side chunk size for draining the ring buffer.
 pub const writer_chunk_bytes: usize = 64 * 1024;
 const max_supported_channels: usize = 32;
 const max_cross_stripe_bytes: usize = max_supported_channels * @sizeOf(u64);
 
+/// 异步采集写线程共享上下文 / Shared state for asynchronous capture writer threads.
 pub const RawWriterContext = struct {
     ring: *ringbuffer.RingBuffer,
     file: std.fs.File,
@@ -19,6 +21,7 @@ pub const RawWriterContext = struct {
     failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 };
 
+/// 将 ring-buffer 中采集字节写入文件，可选解码 cross 模式布局 / Drains ring-buffered capture bytes to file, optionally decoding cross-mode layout.
 pub fn runRawWriter(ctx: *RawWriterContext) void {
     if (ctx.decode_cross) {
         runDecodedCrossWriter(ctx);
@@ -28,6 +31,7 @@ pub fn runRawWriter(ctx: *RawWriterContext) void {
     runPassthroughWriter(ctx);
 }
 
+/// 直接透传原始传输字节到输出，不做样本重排 / Streams raw transport bytes directly to output without sample reshaping.
 fn runPassthroughWriter(ctx: *RawWriterContext) void {
     var scratch: [writer_chunk_bytes]u8 = undefined;
     var written: usize = 0;
@@ -69,6 +73,7 @@ fn runPassthroughWriter(ctx: *RawWriterContext) void {
     }
 }
 
+/// 写入前将 cross-lane DMA 条带转换为逐样本字 / Converts cross-lane DMA stripes to per-sample words before writing.
 fn runDecodedCrossWriter(ctx: *RawWriterContext) void {
     const stripe_bytes = crossStripeBytes(ctx.channel_count) catch {
         ctx.failed.store(true, .release);
@@ -150,6 +155,7 @@ fn runDecodedCrossWriter(ctx: *RawWriterContext) void {
     }
 }
 
+/// 返回一整条 cross 模式交织条带的字节数 / Returns one full interleaved cross-mode stripe size in bytes.
 fn crossStripeBytes(channel_count: u32) !usize {
     return switch (channel_count) {
         16, 32 => @as(usize, @intCast(channel_count)) * @sizeOf(u64),
@@ -157,6 +163,7 @@ fn crossStripeBytes(channel_count: u32) !usize {
     };
 }
 
+/// 将压缩 cross 模式数据块解码为标准小端样本字 / Decodes packed cross-mode blocks into standard little-endian sample words.
 fn decodeCrossDataChunk(channel_count: u32, input: []const u8, output: []u8) !usize {
     const stripe_bytes = try crossStripeBytes(channel_count);
     if (input.len % stripe_bytes != 0) return error.InvalidCrossChunkSize;
@@ -197,6 +204,7 @@ fn decodeCrossDataChunk(channel_count: u32, input: []const u8, output: []u8) !us
     return out_offset;
 }
 
+/// 从字节切片读取一个非对齐 little-endian u64 / Reads an unaligned little-endian u64 from a byte slice.
 fn readLeU64(bytes: []const u8) u64 {
     var value: u64 = 0;
     var i: usize = 0;
@@ -206,11 +214,13 @@ fn readLeU64(bytes: []const u8) u64 {
     return value;
 }
 
+/// 写入 little-endian 16 位字 / Writes a little-endian 16-bit word.
 fn writeLeU16(dst: []u8, value: u16) void {
     dst[0] = @intCast(value & 0x00FF);
     dst[1] = @intCast((value >> 8) & 0x00FF);
 }
 
+/// 写入 little-endian 32 位字 / Writes a little-endian 32-bit word.
 fn writeLeU32(dst: []u8, value: u32) void {
     dst[0] = @intCast(value & 0x000000FF);
     dst[1] = @intCast((value >> 8) & 0x000000FF);
@@ -218,10 +228,12 @@ fn writeLeU32(dst: []u8, value: u32) void {
     dst[3] = @intCast((value >> 24) & 0x000000FF);
 }
 
+/// 读取 little-endian 16 位字 / Reads a little-endian 16-bit word.
 fn readLeU16(src: []const u8) u16 {
     return @as(u16, src[0]) | (@as(u16, src[1]) << 8);
 }
 
+/// 读取 little-endian 32 位字 / Reads a little-endian 32-bit word.
 fn readLeU32(src: []const u8) u32 {
     return @as(u32, src[0]) |
         (@as(u32, src[1]) << 8) |
@@ -297,7 +309,7 @@ test "decodeCrossDataChunk decodes 16-channel stripes into packed samples" {
     var input: [16 * 8]u8 = [_]u8{0} ** (16 * 8);
     var output: [16 * 8]u8 = [_]u8{0} ** (16 * 8);
 
-    // CH0: 0101..., CH1..CH15: 0
+    // CH0: 0101...，CH1..CH15 为 0 / CH0: 0101..., CH1..CH15: 0
     const ch0_word: u64 = 0xAAAA_AAAA_AAAA_AAAA;
     var i: usize = 0;
     while (i < 8) : (i += 1) {

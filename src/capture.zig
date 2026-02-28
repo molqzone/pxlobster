@@ -13,13 +13,16 @@ const no_failure_status: u32 = std.math.maxInt(u32);
 const supports_posix_sigint = builtin.os.tag != .windows and builtin.os.tag != .wasi;
 var loop_interrupt_requested = std.atomic.Value(bool).init(false);
 
+/// 采集写线程使用的输出编码 / Output encoding used by capture writers.
 pub const OutputFormat = session.OutputFormat;
 
+/// 采集样本字节的写入目标 / Destination for captured sample bytes.
 pub const CaptureOutputTarget = union(enum) {
     file_path: []const u8,
     stdout,
 };
 
+/// 高层采集运行参数 / High-level capture runtime options.
 pub const CaptureOptions = struct {
     output_target: CaptureOutputTarget,
     sample_bytes: usize,
@@ -146,6 +149,7 @@ fn captureRegisterTargetBytes(sample_bytes: usize, transfer_size: usize, op_mode
     return @intCast(sample_bytes);
 }
 
+/// 根据通道数对应的单位字节数，把时长目标换算为字节目标 / Converts a duration target to byte target using channel-count-aware unitsize.
 fn targetBytesFromDurationMs(duration_ms: u64, samplerate_hz: u64, channel_count: u32, decode_cross: bool) !usize {
     if (duration_ms == 0) return error.InvalidCaptureDuration;
 
@@ -172,6 +176,7 @@ fn targetBytesFromDurationMs(duration_ms: u64, samplerate_hz: u64, channel_count
     return @intCast(target_bytes_u128);
 }
 
+/// 将互斥的字节目标/时长目标解析为最终采集字节数 / Resolves mutually exclusive byte/duration targets into final byte count.
 fn resolveTargetBytes(options: CaptureOptions, channel_count: u32) !usize {
     if (options.duration_ms) |duration_ms| {
         if (options.capture_profile.op_mode == .loop) return error.InvalidCaptureDurationMode;
@@ -226,10 +231,12 @@ fn validateTriggerMasksForChannelCount(profile: usb.CaptureProfile, channel_coun
     if ((profile.trigger_fall & invalid_bits) != 0) return error.InvalidTriggerChannel;
 }
 
+/// 判断是否必须在采集前严格探测通道数 / Returns true when channel count must be strictly probed before capture starts.
 fn requiresStrictChannelCountProbe(options: CaptureOptions) bool {
     return options.duration_ms != null or options.strict_channel_count_probe or options.decode_cross;
 }
 
+/// 解析最终 `.sr` 输出路径，并拒绝不支持的目标/格式组合 / Resolves final `.sr` session output path and rejects unsupported target/format pairs.
 fn srOutputPathFor(options: CaptureOptions) !?[]const u8 {
     return switch (options.output_target) {
         .file_path => |path| if (options.output_format == .sr) path else null,
@@ -237,6 +244,7 @@ fn srOutputPathFor(options: CaptureOptions) !?[]const u8 {
     };
 }
 
+/// 执行端到端采集流程（开设备、配寄存器、跑传输循环、写输出） / Runs end-to-end capture (device open, register setup, transfer loop, and output write).
 pub fn runCapture(
     allocator: std.mem.Allocator,
     ctx: *c.libusb_context,
@@ -525,6 +533,7 @@ fn transferCallback(raw_transfer: ?*c.libusb_transfer) callconv(.c) void {
     _ = shared.active_submissions.fetchSub(1, .acq_rel);
 }
 
+/// 将收到的数据推进 ringbuffer，并仅统计实际写入的字节 / Pushes received payload into ringbuffer and tracks accepted bytes only.
 fn pushTransferPayload(shared: *SharedState, payload: []const u8) void {
     const pushed = shared.ring.push(payload);
     if (pushed > 0) {
@@ -532,6 +541,7 @@ fn pushTransferPayload(shared: *SharedState, payload: []const u8) void {
     }
 }
 
+/// 尽力取消所有仍在进行中的 USB 传输 / Best-effort cancellation for all outstanding transfers.
 fn cancelActiveTransfers(slots: []TransferSlot) void {
     for (slots) |slot| {
         if (slot.transfer) |transfer| {
@@ -540,6 +550,7 @@ fn cancelActiveTransfers(slots: []TransferSlot) void {
     }
 }
 
+/// 轮询 libusb 事件，直到所有已提交传输完成或取消 / Pumps libusb events until all submitted transfers have completed/cancelled.
 fn drainTransfers(ctx: *c.libusb_context, slots: []TransferSlot, shared: *SharedState) void {
     if (slots.len == 0) return;
 
@@ -558,6 +569,7 @@ fn drainTransfers(ctx: *c.libusb_context, slots: []TransferSlot, shared: *Shared
     shared.producer_done.store(true, .release);
 }
 
+/// 按优先级打开首个受支持设备，并按需完成固件/位流引导 / Opens the first supported device, bootstrapping firmware/bitstream as needed.
 fn openFirstSupportedDevice(allocator: std.mem.Allocator, ctx: *c.libusb_context) !OpenedCaptureDevice {
     var device_list: [*c]?*c.libusb_device = undefined;
     const count = c.libusb_get_device_list(ctx, &device_list);
@@ -715,7 +727,7 @@ test "targetBytesFromDurationMs converts milliseconds to byte target" {
 }
 
 test "targetBytesFromDurationMs aligns decode-cross to full cross stripes" {
-    // 25 MHz * 1 ms = 25_000 samples => rounded up to 25_024 for decode-cross.
+    // 25 MHz * 1 ms = 25_000 样本，decode-cross 需向上对齐到 25_024 / 25 MHz * 1 ms = 25_000 samples => rounded up to 25_024 for decode-cross.
     const bytes_16ch = try targetBytesFromDurationMs(1, 25_000_000, 16, true);
     try std.testing.expectEqual(@as(usize, 50_048), bytes_16ch);
 }

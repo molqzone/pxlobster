@@ -1,6 +1,7 @@
 const std = @import("std");
 const caps = @import("caps.zig");
 
+/// 从根模块转导出的 libusb C 绑定 / Re-export of libusb C bindings from project root module.
 pub const c = @import("pxlobster").libusb;
 
 pub const BULK_EP_REG_OUT: u8 = 0x01;
@@ -61,6 +62,7 @@ pub const DEFAULT_VTH_VOLTS: f64 = 2.0;
 pub const DEFAULT_VTH_SCALE: f64 = 3.334;
 pub const MAX_CAPTURE_REGISTER_WRITES: usize = 26;
 
+/// 基础 USB 描述符与拓扑字段快照 / Snapshot of basic USB descriptor and topology fields.
 pub const DeviceSnapshot = struct {
     vid: u16,
     pid: u16,
@@ -69,12 +71,14 @@ pub const DeviceSnapshot = struct {
     address: u8,
 };
 
+/// PX 控制端点返回的厂商控制状态载荷 / Vendor control status payload returned by PX control endpoint.
 pub const ControlStatus = extern struct {
     sync_cur_sample: u64,
     trig_out_validset: u32,
     real_pos: u32,
 };
 
+/// 与 PXView 字段对齐的运行时采集寄存器配置 / Runtime capture register profile mirroring PXView fields.
 pub const CaptureProfile = struct {
     op_mode: caps.OperationMode = .buffer,
     samplerate_hz: u64 = caps.default_capture_samplerate_hz,
@@ -90,11 +94,13 @@ pub const CaptureProfile = struct {
     vth_volts: f64 = DEFAULT_VTH_VOLTS,
 };
 
+/// 有序采集脚本中的一条寄存器写操作 / One register write in an ordered capture script.
 pub const RegisterWrite = struct {
     addr: u32,
     value: u32,
 };
 
+/// 固定容量的有序寄存器写程序，用于启动采集 / Fixed-capacity ordered register write program for capture start.
 pub const CaptureRegisterScript = struct {
     writes: [MAX_CAPTURE_REGISTER_WRITES]RegisterWrite,
     len: usize,
@@ -117,6 +123,7 @@ pub const CaptureRegisterScript = struct {
     }
 };
 
+/// 枚举当前连接 USB 设备并生成稳定快照 / Enumerates connected USB devices into stable snapshots.
 pub fn listSnapshots(allocator: std.mem.Allocator, ctx: *c.libusb_context) ![]DeviceSnapshot {
     var device_list: [*c]?*c.libusb_device = undefined;
     const count = c.libusb_get_device_list(ctx, &device_list);
@@ -138,6 +145,7 @@ pub fn listSnapshots(allocator: std.mem.Allocator, ctx: *c.libusb_context) ![]De
     return snapshots.toOwnedSlice(allocator);
 }
 
+/// 从 libusb 设备描述符提取快照信息 / Extracts a device snapshot from a libusb device descriptor.
 pub fn snapshotFromDevice(dev: *c.libusb_device) ?DeviceSnapshot {
     var desc: c.libusb_device_descriptor = undefined;
     if (c.libusb_get_device_descriptor(dev, &desc) != 0) return null;
@@ -151,6 +159,7 @@ pub fn snapshotFromDevice(dev: *c.libusb_device) ?DeviceSnapshot {
     };
 }
 
+/// 为给定设备打开原始 libusb 句柄 / Opens a raw libusb handle for the provided device.
 pub fn openDevice(dev: *c.libusb_device) !*c.libusb_device_handle {
     var handle_opt: ?*c.libusb_device_handle = null;
     if (c.libusb_open(dev, &handle_opt) != 0 or handle_opt == null) {
@@ -159,6 +168,7 @@ pub fn openDevice(dev: *c.libusb_device) !*c.libusb_device_handle {
     return handle_opt.?;
 }
 
+/// 打开首个匹配 VID/PID 的设备；若无匹配则返回 null / Opens the first device matching VID/PID, or null if no match exists.
 pub fn openFirstDeviceByVidPid(ctx: *c.libusb_context, vid: u16, pid: u16) !?*c.libusb_device_handle {
     var device_list: [*c]?*c.libusb_device = undefined;
     const count = c.libusb_get_device_list(ctx, &device_list);
@@ -187,20 +197,24 @@ pub fn openFirstDeviceByVidPid(ctx: *c.libusb_context, vid: u16, pid: u16) !?*c.
     return null;
 }
 
+/// 关闭此前打开的 libusb 设备句柄 / Closes a previously opened libusb device handle.
 pub fn closeDevice(handle: *c.libusb_device_handle) void {
     c.libusb_close(handle);
 }
 
+/// claim 指定 USB 接口 / Claims the selected USB interface.
 pub fn claimInterface(handle: *c.libusb_device_handle, index: c_int) !void {
     if (c.libusb_claim_interface(handle, index) != 0) {
         return error.LibusbClaimInterfaceFailed;
     }
 }
 
+/// release 指定 USB 接口 / Releases the selected USB interface.
 pub fn releaseInterface(handle: *c.libusb_device_handle, index: c_int) void {
     _ = c.libusb_release_interface(handle, index);
 }
 
+/// 执行厂商自定义 OUT 控制传输，并严格校验长度 / Performs a vendor-specific OUT control transfer with exact-length validation.
 pub fn controlTransferVendorOut(
     handle: *c.libusb_device_handle,
     request: u8,
@@ -224,6 +238,7 @@ pub fn controlTransferVendorOut(
     if (rc < 0 or rc != expected) return error.LibusbControlTransferFailed;
 }
 
+/// 执行厂商自定义 IN 控制传输并返回实际字节数 / Performs a vendor-specific IN control transfer and returns bytes received.
 pub fn controlTransferVendorIn(
     handle: *c.libusb_device_handle,
     request: u8,
@@ -247,6 +262,7 @@ pub fn controlTransferVendorIn(
     return @intCast(rc);
 }
 
+/// 通过厂商 IN 控制传输读取 PX 控制状态结构 / Reads the PX control status structure via vendor IN control transfer.
 pub fn readControlStatus(handle: *c.libusb_device_handle, timeout_ms: u32) !ControlStatus {
     var status: ControlStatus = std.mem.zeroes(ControlStatus);
     const bytes = std.mem.asBytes(&status);
@@ -255,6 +271,7 @@ pub fn readControlStatus(handle: *c.libusb_device_handle, timeout_ms: u32) !Cont
     return status;
 }
 
+/// 向指定端点写入完整 bulk 载荷 / Writes an exact bulk payload to the given endpoint.
 pub fn bulkWrite(handle: *c.libusb_device_handle, endpoint: u8, data: []const u8, timeout_ms: u32) !void {
     var transferred: c_int = 0;
     const payload: [*c]u8 = @ptrCast(@constCast(data.ptr));
@@ -270,6 +287,7 @@ pub fn bulkWrite(handle: *c.libusb_device_handle, endpoint: u8, data: []const u8
     if (rc != 0 or transferred != expected) return error.LibusbBulkTransferFailed;
 }
 
+/// 从指定端点读取完整 bulk 载荷 / Reads an exact bulk payload from the given endpoint.
 pub fn bulkRead(handle: *c.libusb_device_handle, endpoint: u8, data: []u8, timeout_ms: u32) !void {
     var transferred: c_int = 0;
     const payload: [*c]u8 = @ptrCast(data.ptr);
@@ -285,12 +303,14 @@ pub fn bulkRead(handle: *c.libusb_device_handle, endpoint: u8, data: []u8, timeo
     if (rc != 0 or transferred != expected) return error.LibusbBulkTransferFailed;
 }
 
+/// 清除端点 halt/stall 状态 / Clears endpoint halt/stall state.
 pub fn clearHalt(handle: *c.libusb_device_handle, endpoint: u8) !void {
     if (c.libusb_clear_halt(handle, endpoint) != 0) {
         return error.LibusbClearHaltFailed;
     }
 }
 
+/// 写入单个 PX 寄存器并校验 ACK 标记 / Writes a single PX register and validates the ACK token.
 pub fn writeRegister(handle: *c.libusb_device_handle, reg_addr: u32, reg_data: u32, timeout_ms: u32) !void {
     var packet = [_]u32{
         CMD_WRITE_REGISTER,
@@ -304,6 +324,7 @@ pub fn writeRegister(handle: *c.libusb_device_handle, reg_addr: u32, reg_data: u
     if (packet[3] != CMD_REGISTER_ACK) return error.PxLogicRegisterAckMismatch;
 }
 
+/// 读取单个 PX 寄存器值 / Reads one PX register value.
 pub fn readRegister(handle: *c.libusb_device_handle, reg_addr: u32, timeout_ms: u32) !u32 {
     var packet = [_]u32{
         CMD_READ_REGISTER,
@@ -317,6 +338,7 @@ pub fn readRegister(handle: *c.libusb_device_handle, reg_addr: u32, timeout_ms: 
     return packet[3];
 }
 
+/// 将对齐后的固件/位流字节写入 PX 写数据窗口 / Uploads aligned firmware/bitstream bytes into PX write-data window.
 pub fn writeDataUpdate(
     handle: *c.libusb_device_handle,
     base_addr: u32,
@@ -357,6 +379,7 @@ pub fn writeDataUpdate(
     }
 }
 
+/// 按给定 profile 应用完整的采集启动寄存器程序 / Applies full capture-start register program for the given profile.
 pub fn prepareCaptureRegistersWithProfile(
     handle: *c.libusb_device_handle,
     transfer_size: u32,
@@ -369,7 +392,7 @@ pub fn prepareCaptureRegistersWithProfile(
 
     const reg_timeout_ms: u32 = if (timeout_ms == 0) DEFAULT_REGISTER_TIMEOUT_MS else timeout_ms;
 
-    // Keep PXView start order: reset block pointer then clear data endpoints.
+    // 保持 PXView 启动顺序：先复位块指针，再清理数据端点 / Keep PXView start order: reset block pointer then clear data endpoints.
     try writeRegister(handle, REG_BLOCK_START, 0, reg_timeout_ms);
     try clearHalt(handle, BULK_EP_DATA_IN);
     try clearHalt(handle, 0x04);
@@ -379,6 +402,7 @@ pub fn prepareCaptureRegistersWithProfile(
     try applyCaptureRegisterScript(handle, &script, reg_timeout_ms);
 }
 
+/// 以 PXView 兼容顺序构建采集寄存器写序列 / Builds capture register writes in PXView-compatible ordering.
 pub fn buildCaptureRegisterScript(
     transfer_size: u32,
     target_bytes: u64,
@@ -446,6 +470,7 @@ pub fn streamMaskForMode(op_mode: caps.OperationMode) u32 {
     };
 }
 
+/// 返回启用通道位掩码（支持 1..32 通道） / Returns bitmask for enabled channels (1..32 channels).
 pub fn captureChannelMask(channel_count: u32) !u32 {
     if (channel_count == 0 or channel_count > 32) return error.InvalidChannelCount;
     if (channel_count == 32) return std.math.maxInt(u32);
@@ -454,6 +479,7 @@ pub fn captureChannelMask(channel_count: u32) !u32 {
     return (@as(u32, 1) << shift) - 1;
 }
 
+/// 发送停止采集的寄存器命令 / Sends capture-stop register command.
 pub fn stopCaptureRegisters(handle: *c.libusb_device_handle, timeout_ms: u32) !void {
     const reg_timeout_ms: u32 = if (timeout_ms == 0) DEFAULT_REGISTER_TIMEOUT_MS else timeout_ms;
     try writeRegister(handle, REG_STREAM_START, STREAM_STOP_FLAGS, reg_timeout_ms);

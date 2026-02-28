@@ -1,10 +1,12 @@
 const std = @import("std");
 
+/// 采集输出链路支持的序列化格式 / Output serialization format supported by the capture pipeline.
 pub const OutputFormat = enum {
     bin,
     sr,
 };
 
+/// 写线程与 USB 循环停止后输出的最终统计信息 / Final capture accounting emitted after writer and USB loops stop.
 pub const CaptureSessionStats = struct {
     bytes_in: u64 = 0,
     bytes_out: u64 = 0,
@@ -13,6 +15,7 @@ pub const CaptureSessionStats = struct {
     channel_count: u32 = 16,
 };
 
+/// 渲染到 `.sr` 包内 Sigrok `metadata` 的字段集合 / Sigrok `metadata` payload fields rendered into an `.sr` archive.
 pub const SessionMetadata = struct {
     samplerate_hz: u64,
     channel_count: u32,
@@ -22,10 +25,12 @@ pub const SessionMetadata = struct {
     probe_labels: ?[]const []const u8 = null,
 };
 
+/// 返回固定的 sigrok 会话版本标记（`version` 条目内容） / Returns the fixed sigrok session format marker (`version` entry content).
 pub fn versionFileContent() []const u8 {
     return "2";
 }
 
+/// 将受支持通道宽度映射到 sigrok unitsize 字节数 / Maps supported channel width to sigrok unitsize bytes.
 pub fn unitsizeForChannelCount(channel_count: u32) !u32 {
     return switch (channel_count) {
         16 => 2,
@@ -34,6 +39,7 @@ pub fn unitsizeForChannelCount(channel_count: u32) !u32 {
     };
 }
 
+/// 为当前采样率与通道宽度构建默认 metadata / Builds default metadata for the current samplerate and probe width.
 pub fn initMetadata(samplerate_hz: u64, channel_count: u32) !SessionMetadata {
     return .{
         .samplerate_hz = samplerate_hz,
@@ -42,6 +48,7 @@ pub fn initMetadata(samplerate_hz: u64, channel_count: u32) !SessionMetadata {
     };
 }
 
+/// 渲染 `.sr` 归档内部使用的 sigrok metadata INI 文本 / Renders the sigrok metadata INI body used inside `.sr` archives.
 pub fn renderMetadata(allocator: std.mem.Allocator, metadata: SessionMetadata) ![]u8 {
     var buffer: std.ArrayList(u8) = .empty;
     defer buffer.deinit(allocator);
@@ -63,6 +70,7 @@ pub fn renderMetadata(allocator: std.mem.Allocator, metadata: SessionMetadata) !
     return buffer.toOwnedSlice(allocator);
 }
 
+/// 优先使用显式 probe 标签覆盖，否则回退到默认 `D{n}` 标签 / Resolves probe label using explicit overrides first, then default `D{n}` labels.
 fn probeLabel(metadata: SessionMetadata, probe_index: u32) []const u8 {
     if (metadata.probe_labels) |labels| {
         if (probe_index < labels.len and labels[probe_index].len > 0) {
@@ -84,6 +92,7 @@ fn probeLabel(metadata: SessionMetadata, probe_index: u32) []const u8 {
     };
 }
 
+/// 使用固定大小栈缓冲拼接一行格式化 metadata / Appends one formatted metadata line using a fixed-size stack scratch buffer.
 fn appendFmtLine(
     allocator: std.mem.Allocator,
     buffer: *std.ArrayList(u8),
