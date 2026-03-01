@@ -5,6 +5,7 @@ const capture = @import("capture.zig");
 const usb = @import("usb.zig");
 const device = @import("device.zig");
 const c = usb.c;
+const supports_linux_udev_hint = builtin.os.tag == .linux;
 
 /// CLI 入口：解析参数、分发命令并将失败映射到退出码 / CLI entry point: parse args, dispatch command, and map failures to exit codes.
 pub fn main() !void {
@@ -85,7 +86,7 @@ fn verboseLog(enabled: bool, writer: anytype, comptime fmt: []const u8, values: 
 }
 
 fn printLinuxUdevHint(stderr: anytype) !void {
-    if (builtin.os.tag != .linux) return;
+    if (!supports_linux_udev_hint) return;
     try stderr.writeAll(
         \\hint: permission denied while opening PX Logic USB device on Linux.
         \\hint: install udev rule and reload:
@@ -196,7 +197,7 @@ fn primeFirmware(stdout: anytype, stderr: anytype, verbose: bool) !void {
         try stdout.writeAll("No supported devices found.\n");
         try verboseLog(verbose, stderr, "verbose: no supported devices detected\n", .{});
     }
-    if (saw_permission_denied) {
+    if (supports_linux_udev_hint and saw_permission_denied) {
         try printLinuxUdevHint(stderr);
     }
 }
@@ -274,7 +275,7 @@ fn stopCaptureOnSupportedDevices(stdout: anytype, stderr: anytype, verbose: bool
         "stop complete: stopped={d} busy={d} failed={d} permission_denied={d}\n",
         .{ stopped, busy, failed, permission_denied },
     );
-    if (permission_denied > 0) {
+    if (supports_linux_udev_hint and permission_denied > 0) {
         try printLinuxUdevHint(stderr);
     }
 }
@@ -335,7 +336,7 @@ fn runCapture(parsed: args.ParsedCommand, stdout: anytype, stderr: anytype) !voi
         },
     }) catch |err| {
         try stderr.print("capture failed: {s}\n", .{@errorName(err)});
-        if (err == error.LibusbPermissionDenied) {
+        if (supports_linux_udev_hint and err == error.LibusbPermissionDenied) {
             try printLinuxUdevHint(stderr);
         }
         try stderr.flush();
