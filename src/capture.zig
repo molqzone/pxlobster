@@ -10,8 +10,8 @@ const srzip = @import("output/srzip.zig");
 
 const c = usb.c;
 const no_failure_status: u32 = std.math.maxInt(u32);
-const supports_posix_sigint = builtin.os.tag != .windows and builtin.os.tag != .wasi;
-var loop_interrupt_requested = std.atomic.Value(bool).init(false);
+const supports_posix_capture_signals = builtin.os.tag != .windows and builtin.os.tag != .wasi;
+var capture_interrupt_requested = std.atomic.Value(bool).init(false);
 
 /// 采集写线程使用的输出编码 / Output encoding used by capture writers.
 pub const OutputFormat = session.OutputFormat;
@@ -108,39 +108,47 @@ const CandidateSlot = struct {
     dev: ?*c.libusb_device = null,
 };
 
-const LoopSignalGuard = struct {
+const CaptureSignalGuard = struct {
     active: bool = false,
-    previous: std.posix.Sigaction = undefined,
+    previous_int: std.posix.Sigaction = undefined,
+    previous_term: std.posix.Sigaction = undefined,
+    term_installed: bool = false,
 
-    fn install() LoopSignalGuard {
-        if (!supports_posix_sigint) return .{};
+    fn install() CaptureSignalGuard {
+        if (!supports_posix_capture_signals) return .{};
 
-        loop_interrupt_requested.store(false, .release);
-        var guard = LoopSignalGuard{ .active = true };
+        capture_interrupt_requested.store(false, .release);
+        var guard = CaptureSignalGuard{ .active = true };
         const action: std.posix.Sigaction = .{
-            .handler = .{ .handler = loopSigIntHandler },
+            .handler = .{ .handler = captureSignalHandler },
             .mask = std.posix.sigemptyset(),
             .flags = 0,
         };
-        std.posix.sigaction(std.posix.SIG.INT, &action, &guard.previous);
+        std.posix.sigaction(std.posix.SIG.INT, &action, &guard.previous_int);
+        std.posix.sigaction(std.posix.SIG.TERM, &action, &guard.previous_term);
+        guard.term_installed = true;
         return guard;
     }
 
-    fn restore(self: *LoopSignalGuard) void {
-        if (!supports_posix_sigint) return;
+    fn restore(self: *CaptureSignalGuard) void {
+        if (!supports_posix_capture_signals) return;
         if (!self.active) return;
-        std.posix.sigaction(std.posix.SIG.INT, &self.previous, null);
+        if (self.term_installed) {
+            std.posix.sigaction(std.posix.SIG.TERM, &self.previous_term, null);
+            self.term_installed = false;
+        }
+        std.posix.sigaction(std.posix.SIG.INT, &self.previous_int, null);
         self.active = false;
     }
 
     fn interrupted() bool {
-        if (!supports_posix_sigint) return false;
-        return loop_interrupt_requested.load(.acquire);
+        if (!supports_posix_capture_signals) return false;
+        return capture_interrupt_requested.load(.acquire);
     }
 };
 
-fn loopSigIntHandler(_: i32) callconv(.c) void {
-    loop_interrupt_requested.store(true, .release);
+fn captureSignalHandler(_: i32) callconv(.c) void {
+    capture_interrupt_requested.store(true, .release);
 }
 
 fn captureRegisterTargetBytes(sample_bytes: usize, transfer_size: usize, op_mode: caps.OperationMode) u64 {
@@ -326,11 +334,8 @@ pub fn runCapture(
     defer if (close_output_file) output_file.close();
 
     const loop_mode = options.capture_profile.op_mode == .loop;
-    var loop_signal_guard = LoopSignalGuard{};
-    if (loop_mode) {
-        loop_signal_guard = LoopSignalGuard.install();
-    }
-    defer loop_signal_guard.restore();
+    var capture_signal_guard = CaptureSignalGuard.install();
+    defer capture_signal_guard.restore();
 
     const register_target_bytes = captureRegisterTargetBytes(
         target_bytes,
@@ -346,7 +351,11 @@ pub fn runCapture(
         options.capture_profile,
         options.register_timeout_ms,
     );
-    defer usb.stopCaptureRegisters(handle, options.register_timeout_ms) catch {};
+    errdefer {
+        usb.stopCaptureRegisters(handle, options.register_timeout_ms) catch |err| {
+            std.log.warn("failed to stop capture registers during error unwind: {}", .{err});
+        };
+    }
 
     var slots = try allocator.alloc(TransferSlot, options.transfer_count);
     defer allocator.free(slots);
@@ -398,7 +407,7 @@ pub fn runCapture(
     var trigger_seen = false;
     var cancel_sent = false;
     while (true) {
-        if (loop_mode and LoopSignalGuard.interrupted()) {
+        if (CaptureSignalGuard.interrupted()) {
             shared.stop_requested.store(true, .release);
         }
 
@@ -498,6 +507,8 @@ pub fn runCapture(
             .channel_count = capture_channel_count,
         });
     }
+
+    try usb.stopCaptureRegisters(handle, options.register_timeout_ms);
 
     return .{
         .bytes_in = shared.bytes_in.load(.acquire),

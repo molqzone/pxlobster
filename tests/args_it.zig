@@ -127,6 +127,15 @@ pub fn main() !void {
         else => return error.ExpectedPrimeFwCommand,
     }
 
+    const stop_verbose_argv = [_][]const u8{ "pxlobster", "--stop", "-v" };
+    var stop_verbose_result = try args.parseArgsFromSlice(&stop_verbose_argv, std.heap.page_allocator);
+    defer args.deinitParsedCommand(&stop_verbose_result, std.heap.page_allocator);
+    if (!stop_verbose_result.verbose) return error.ExpectedVerbose;
+    switch (stop_verbose_result.command) {
+        .stop => {},
+        else => return error.ExpectedStopCommand,
+    }
+
     const time_samples_conflict_argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--time", "10", "--samples", "4096" };
     const time_samples_conflict = args.parseArgsFromSlice(&time_samples_conflict_argv, std.heap.page_allocator);
     if (time_samples_conflict) |_| {
@@ -170,6 +179,14 @@ pub fn main() !void {
     const conflict_argv = [_][]const u8{ "pxlobster", "--scan", "--stdout" };
     const conflict_result = args.parseArgsFromSlice(&conflict_argv, std.heap.page_allocator);
     if (conflict_result) |_| {
+        return error.ExpectedInvalidArgument;
+    } else |err| {
+        if (err != error.InvalidArgument) return err;
+    }
+
+    const stop_conflict_argv = [_][]const u8{ "pxlobster", "--stop", "--stdout", "--format", "bin" };
+    const stop_conflict_result = args.parseArgsFromSlice(&stop_conflict_argv, std.heap.page_allocator);
+    if (stop_conflict_result) |_| {
         return error.ExpectedInvalidArgument;
     } else |err| {
         if (err != error.InvalidArgument) return err;

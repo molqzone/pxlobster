@@ -54,6 +54,7 @@ pub const ParsedCommand = struct {
 pub const Command = union(enum) {
     scan,
     prime_fw,
+    stop,
     capture: CaptureCommand,
 };
 
@@ -62,6 +63,7 @@ const clap_params = clap.parseParamsComptime(
     \\-v, --verbose
     \\    --scan
     \\    --prime-fw
+    \\    --stop
     \\-o, --output-file <str>...
     \\    --stdout
     \\    --format <str>...
@@ -128,11 +130,13 @@ fn commandFromParsedArgs(parsed_args: anytype) !ParsedCommand {
 
     const scan_count = @field(parsed_args, "scan");
     const prime_fw_count = @field(parsed_args, "prime-fw");
-    if (scan_count > 0 and prime_fw_count > 0) return error.InvalidArgument;
+    const stop_count = @field(parsed_args, "stop");
+    if (scan_count + prime_fw_count + stop_count > 1) return error.InvalidArgument;
 
-    var requested_read_only: ?enum { scan, prime_fw } = null;
+    var requested_read_only: ?enum { scan, prime_fw, stop } = null;
     if (scan_count > 0) requested_read_only = .scan;
     if (prime_fw_count > 0) requested_read_only = .prime_fw;
+    if (stop_count > 0) requested_read_only = .stop;
 
     const output_paths: []const []const u8 = @field(parsed_args, "output-file");
     const output_path = lastValue([]const u8, output_paths);
@@ -203,6 +207,7 @@ fn commandFromParsedArgs(parsed_args: anytype) !ParsedCommand {
             .command = switch (command) {
                 .scan => .scan,
                 .prime_fw => .prime_fw,
+                .stop => .stop,
             },
             .verbose = verbose,
         };
@@ -449,6 +454,16 @@ test "parseArgsFromSlice enables verbose for capture and scan commands" {
     try std.testing.expect(scan_result.verbose);
 }
 
+test "parseArgsFromSlice parses stop command with verbose" {
+    const stop_argv = [_][]const u8{ "pxlobster", "--stop", "--verbose" };
+    const stop_result = try parseArgsFromSlice(&stop_argv, std.testing.allocator);
+    switch (stop_result.command) {
+        .stop => {},
+        else => return error.TestExpectedEqual,
+    }
+    try std.testing.expect(stop_result.verbose);
+}
+
 test "parseArgsFromSlice rejects stdout and output-file conflict" {
     const argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "-o", "capture.bin" };
     try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
@@ -529,6 +544,14 @@ test "parseArgsFromSlice rejects loop mode with time" {
 test "parseArgsFromSlice keeps scan and capture mutually exclusive" {
     const argv = [_][]const u8{ "pxlobster", "--scan", "--stdout" };
     try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
+}
+
+test "parseArgsFromSlice keeps stop mutually exclusive with other command groups" {
+    const scan_stop = [_][]const u8{ "pxlobster", "--scan", "--stop" };
+    try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&scan_stop, std.testing.allocator));
+
+    const stop_capture = [_][]const u8{ "pxlobster", "--stop", "--stdout", "--format", "bin" };
+    try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&stop_capture, std.testing.allocator));
 }
 
 test "parseOpMode accepts supported values" {

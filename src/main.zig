@@ -32,6 +32,7 @@ pub fn main() !void {
     switch (parsed.command) {
         .scan => try scanUsbDevices(&stdout.interface, &stderr.interface, parsed.verbose),
         .prime_fw => try primeFirmware(&stdout.interface, &stderr.interface, parsed.verbose),
+        .stop => try stopCaptureOnSupportedDevices(&stdout.interface, &stderr.interface, parsed.verbose),
         .capture => try runCapture(parsed, &stdout.interface, &stderr.interface),
     }
 }
@@ -48,12 +49,14 @@ fn printUsage(writer: anytype) !void {
         \\Usage:
         \\  pxlobster [--verbose] --scan
         \\  pxlobster [--verbose] --prime-fw
+        \\  pxlobster [--verbose] --stop
         \\  pxlobster [--verbose] -o <path> --format <bin|sr> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
         \\  pxlobster [--verbose] --stdout --format <bin> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
         \\
         \\Options:
         \\  --scan               Read-only scan for supported PX Logic devices.
         \\  --prime-fw           Inject firmware to detected PX Logic devices.
+        \\  --stop               Best-effort stop for active capture on supported PX Logic devices.
         \\  -o, --output-file    Output destination file path.
         \\  --stdout             Stream capture bytes to stdout (pipe-friendly).
         \\  --format             Explicit output format: bin | sr (required for capture; --stdout supports bin only).
@@ -67,7 +70,7 @@ fn printUsage(writer: anytype) !void {
         \\  -h, --help           Show this help.
         \\
         \\Notes:
-        \\  --scan, --prime-fw, and capture mode are mutually exclusive.
+        \\  --scan, --prime-fw, --stop, and capture mode are mutually exclusive.
         \\  Output target (--stdout / --output-file) and output format (--format) are configured independently.
         \\  File extension does not control output format.
         \\  loop mode runs continuously until Ctrl+C.
@@ -194,6 +197,84 @@ fn primeFirmware(stdout: anytype, stderr: anytype, verbose: bool) !void {
         try verboseLog(verbose, stderr, "verbose: no supported devices detected\n", .{});
     }
     if (saw_permission_denied) {
+        try printLinuxUdevHint(stderr);
+    }
+}
+
+/// 对所有受支持设备下发停止采集寄存器，尽力结束可能残留的采集状态 / Sends stop-capture register command to all supported devices as best effort.
+fn stopCaptureOnSupportedDevices(stdout: anytype, stderr: anytype, verbose: bool) !void {
+    try verboseLog(verbose, stderr, "verbose: stop start\n", .{});
+    var ctx: ?*c.libusb_context = null;
+    const init_rc = c.libusb_init(&ctx);
+    if (init_rc != 0 or ctx == null) return error.LibusbInitFailed;
+    defer c.libusb_exit(ctx);
+    try verboseLog(verbose, stderr, "verbose: libusb_init ok\n", .{});
+
+    const active_ctx = ctx.?;
+    var device_list: [*c]?*c.libusb_device = undefined;
+    const count = c.libusb_get_device_list(active_ctx, &device_list);
+    if (count < 0) return error.LibusbGetDeviceListFailed;
+    defer c.libusb_free_device_list(device_list, 1);
+    try verboseLog(verbose, stderr, "verbose: device count={d}\n", .{count});
+
+    var found_supported = false;
+    var stopped: usize = 0;
+    var busy: usize = 0;
+    var failed: usize = 0;
+    var permission_denied: usize = 0;
+
+    const count_usize: usize = @intCast(count);
+    const device_slice = @as([*]?*c.libusb_device, @ptrCast(device_list))[0..count_usize];
+    for (device_slice) |dev_opt| {
+        if (dev_opt == null) continue;
+
+        const snapshot = usb.snapshotFromDevice(dev_opt.?) orelse continue;
+        if (!device.isSupportedPxLogic(snapshot.vid, snapshot.pid)) continue;
+        found_supported = true;
+        try verboseLog(verbose, stderr, "verbose: stop candidate vid={X:0>4} pid={X:0>4} bus={d} addr={d}\n", .{
+            snapshot.vid,
+            snapshot.pid,
+            snapshot.bus,
+            snapshot.address,
+        });
+
+        const handle = usb.openDevice(dev_opt.?) catch |err| {
+            switch (err) {
+                error.LibusbPermissionDenied => permission_denied += 1,
+                else => busy += 1,
+            }
+            continue;
+        };
+        defer usb.closeDevice(handle);
+
+        usb.claimInterface(handle, 0) catch {
+            busy += 1;
+            continue;
+        };
+        defer usb.releaseInterface(handle, 0);
+        usb.claimInterface(handle, 1) catch {
+            busy += 1;
+            continue;
+        };
+        defer usb.releaseInterface(handle, 1);
+
+        usb.stopCaptureRegisters(handle, usb.DEFAULT_REGISTER_TIMEOUT_MS) catch {
+            failed += 1;
+            continue;
+        };
+        stopped += 1;
+    }
+
+    if (!found_supported) {
+        try stdout.writeAll("No supported devices found.\n");
+        return;
+    }
+
+    try stdout.print(
+        "stop complete: stopped={d} busy={d} failed={d} permission_denied={d}\n",
+        .{ stopped, busy, failed, permission_denied },
+    );
+    if (permission_denied > 0) {
         try printLinuxUdevHint(stderr);
     }
 }
