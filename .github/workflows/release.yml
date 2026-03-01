@@ -166,3 +166,63 @@ jobs:
             dist/SHA256SUMS.txt
             dist/*.tar.gz
             dist/*.zip
+
+  update-homebrew-tap:
+    name: Update Homebrew Tap
+    needs: publish
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') && secrets.HOMEBREW_TAP_TOKEN != ''
+
+    steps:
+      - name: Derive tag and source metadata
+        id: meta
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          src_url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${tag}.tar.gz"
+          curl -sSL "$src_url" -o source.tar.gz
+          src_sha="$(sha256sum source.tar.gz | awk '{print $1}')"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "src_url=$src_url" >> "$GITHUB_OUTPUT"
+          echo "src_sha=$src_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/molqzone/homebrew-pxlobster.git" tap
+
+      - name: Update Formula/pxlobster.rb
+        env:
+          SRC_URL: ${{ steps.meta.outputs.src_url }}
+          SRC_SHA: ${{ steps.meta.outputs.src_sha }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import sys
+
+          formula = Path("tap/Formula/pxlobster.rb")
+          text = formula.read_text(encoding="utf-8")
+          text_new = re.sub(r'^\s*url ".*"$', f'  url "{os.environ["SRC_URL"]}"', text, flags=re.MULTILINE)
+          text_new = re.sub(r'^\s*sha256 ".*"$', f'  sha256 "{os.environ["SRC_SHA"]}"', text_new, flags=re.MULTILINE)
+          if text_new == text:
+              print("No formula changes detected.")
+              sys.exit(0)
+          formula.write_text(text_new, encoding="utf-8")
+          PY
+
+      - name: Commit and push tap update
+        working-directory: tap
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          if git diff --quiet; then
+            echo "Tap is already up-to-date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/pxlobster.rb
+          git commit -m "chore(brew): bump pxlobster to ${TAG}"
+          git push origin HEAD:main
