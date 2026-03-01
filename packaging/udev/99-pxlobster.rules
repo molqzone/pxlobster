@@ -1,0 +1,13 @@
+# PXLobster udev access rules for supported PX Logic devices.
+# IDs are sourced from src/device.zig:
+# - 1a86:5237 (WCH PX Logic)
+# - 16c0:05dc (Legacy PX Logic)
+
+ACTION!="add|change", GOTO="pxlobster_end"
+SUBSYSTEM!="usb", GOTO="pxlobster_end"
+ENV{DEVTYPE}!="usb_device", GOTO="pxlobster_end"
+
+ATTR{idVendor}=="1a86", ATTR{idProduct}=="5237", MODE="0660", GROUP="plugdev", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"
+ATTR{idVendor}=="16c0", ATTR{idProduct}=="05dc", MODE="0660", GROUP="plugdev", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"
+
+LABEL="pxlobster_end"

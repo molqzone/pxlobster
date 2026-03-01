@@ -26,6 +26,18 @@ PXLobster 是一个面向 PXLogic 逻辑分析仪的命令行上位机程序。
 - Zig `0.15.2+`
 - 系统 `libusb-1.0` 运行库
 
+## Linux udev 放行
+
+如果在 Linux 下遇到无权限访问设备，可安装 udev 规则：
+
+```bash
+sudo cp packaging/udev/99-pxlobster.rules /etc/udev/rules.d/99-pxlobster.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+然后重新插拔设备，或重新登录当前会话。
+
 ## 用法
 
 ```text

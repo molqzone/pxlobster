@@ -592,6 +592,7 @@ fn openFirstSupportedDevice(allocator: std.mem.Allocator, ctx: *c.libusb_context
     }
 
     var saw_open_failure = false;
+    var saw_permission_denied = false;
     var saw_prime_busy = false;
     var saw_prime_failed = false;
     var opened: ?OpenedCaptureDevice = null;
@@ -599,6 +600,7 @@ fn openFirstSupportedDevice(allocator: std.mem.Allocator, ctx: *c.libusb_context
     const Visitor = struct {
         candidates: []const CandidateSlot,
         saw_open_failure: *bool,
+        saw_permission_denied: *bool,
         saw_prime_busy: *bool,
         saw_prime_failed: *bool,
         opened: *?OpenedCaptureDevice,
@@ -609,6 +611,10 @@ fn openFirstSupportedDevice(allocator: std.mem.Allocator, ctx: *c.libusb_context
 
             switch (device.preparePxLogicDevice(dev_ptr, .{})) {
                 .ready => {},
+                .permission_denied => {
+                    self.saw_permission_denied.* = true;
+                    return false;
+                },
                 .busy => {
                     self.saw_prime_busy.* = true;
                     return false;
@@ -620,8 +626,11 @@ fn openFirstSupportedDevice(allocator: std.mem.Allocator, ctx: *c.libusb_context
             }
 
             std.Thread.sleep(prime_settle_delay_ms * std.time.ns_per_ms);
-            const handle = usb.openDevice(dev_ptr) catch {
-                self.saw_open_failure.* = true;
+            const handle = usb.openDevice(dev_ptr) catch |err| {
+                switch (err) {
+                    error.LibusbPermissionDenied => self.saw_permission_denied.* = true,
+                    else => self.saw_open_failure.* = true,
+                }
                 return false;
             };
 
@@ -636,6 +645,7 @@ fn openFirstSupportedDevice(allocator: std.mem.Allocator, ctx: *c.libusb_context
     const visitor = Visitor{
         .candidates = candidates.items,
         .saw_open_failure = &saw_open_failure,
+        .saw_permission_denied = &saw_permission_denied,
         .saw_prime_busy = &saw_prime_busy,
         .saw_prime_failed = &saw_prime_failed,
         .opened = &opened,
@@ -643,7 +653,7 @@ fn openFirstSupportedDevice(allocator: std.mem.Allocator, ctx: *c.libusb_context
     try visitCandidateIndexesByPriority(candidates.items, visitor);
 
     if (opened) |device_handle| return device_handle;
-    return openSelectionFailure(saw_open_failure, saw_prime_busy, saw_prime_failed);
+    return openSelectionFailure(saw_open_failure, saw_permission_denied, saw_prime_busy, saw_prime_failed);
 }
 
 fn visitCandidateIndexesByPriority(candidates: []const CandidateSlot, visitor: anytype) !void {
@@ -657,10 +667,12 @@ fn visitCandidateIndexesByPriority(candidates: []const CandidateSlot, visitor: a
 
 fn openSelectionFailure(
     saw_open_failure: bool,
+    saw_permission_denied: bool,
     saw_prime_busy: bool,
     saw_prime_failed: bool,
-) error{ PxLogicPrimeFailed, PxLogicPrimeBusy, LibusbOpenFailed, NoSupportedDevicesFound } {
+) error{ PxLogicPrimeFailed, PxLogicPrimeBusy, LibusbPermissionDenied, LibusbOpenFailed, NoSupportedDevicesFound } {
     if (saw_prime_failed) return error.PxLogicPrimeFailed;
+    if (saw_permission_denied) return error.LibusbPermissionDenied;
     if (saw_prime_busy) return error.PxLogicPrimeBusy;
     if (saw_open_failure) return error.LibusbOpenFailed;
     return error.NoSupportedDevicesFound;
@@ -899,10 +911,11 @@ test "visitCandidateIndexesByPriority stops when visitor returns true" {
 }
 
 test "openSelectionFailure prioritizes prime errors over open failures" {
-    try std.testing.expectEqual(error.PxLogicPrimeFailed, openSelectionFailure(true, true, true));
-    try std.testing.expectEqual(error.PxLogicPrimeBusy, openSelectionFailure(true, true, false));
-    try std.testing.expectEqual(error.LibusbOpenFailed, openSelectionFailure(true, false, false));
-    try std.testing.expectEqual(error.NoSupportedDevicesFound, openSelectionFailure(false, false, false));
+    try std.testing.expectEqual(error.PxLogicPrimeFailed, openSelectionFailure(true, true, true, true));
+    try std.testing.expectEqual(error.LibusbPermissionDenied, openSelectionFailure(true, true, true, false));
+    try std.testing.expectEqual(error.PxLogicPrimeBusy, openSelectionFailure(true, false, true, false));
+    try std.testing.expectEqual(error.LibusbOpenFailed, openSelectionFailure(true, false, false, false));
+    try std.testing.expectEqual(error.NoSupportedDevicesFound, openSelectionFailure(false, false, false, false));
 }
 
 test "pushTransferPayload tracks only bytes accepted by ringbuffer" {

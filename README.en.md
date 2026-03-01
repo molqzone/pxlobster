@@ -26,6 +26,18 @@ Requirements:
 - Zig `0.15.2+`
 - System `libusb-1.0` runtime
 
+## Linux udev Access
+
+If you hit permission issues on Linux, install the bundled udev rule:
+
+```bash
+sudo cp packaging/udev/99-pxlobster.rules /etc/udev/rules.d/99-pxlobster.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+Then replug the device, or re-login your current session.
+
 ## Usage
 
 ```text

@@ -162,7 +162,11 @@ pub fn snapshotFromDevice(dev: *c.libusb_device) ?DeviceSnapshot {
 /// 为给定设备打开原始 libusb 句柄 / Opens a raw libusb handle for the provided device.
 pub fn openDevice(dev: *c.libusb_device) !*c.libusb_device_handle {
     var handle_opt: ?*c.libusb_device_handle = null;
-    if (c.libusb_open(dev, &handle_opt) != 0 or handle_opt == null) {
+    const open_rc = c.libusb_open(dev, &handle_opt);
+    if (open_rc == c.LIBUSB_ERROR_ACCESS) {
+        return error.LibusbPermissionDenied;
+    }
+    if (open_rc != 0 or handle_opt == null) {
         return error.LibusbOpenFailed;
     }
     return handle_opt.?;
@@ -177,6 +181,7 @@ pub fn openFirstDeviceByVidPid(ctx: *c.libusb_context, vid: u16, pid: u16) !?*c.
 
     var matched_device = false;
     var open_failed = false;
+    var permission_denied = false;
     const count_usize: usize = @intCast(count);
     const device_slice = @as([*]?*c.libusb_device, @ptrCast(device_list))[0..count_usize];
     for (device_slice) |dev_opt| {
@@ -184,8 +189,11 @@ pub fn openFirstDeviceByVidPid(ctx: *c.libusb_context, vid: u16, pid: u16) !?*c.
         if (snapshotFromDevice(dev_opt.?)) |snapshot| {
             if (snapshot.vid == vid and snapshot.pid == pid) {
                 matched_device = true;
-                const opened = openDevice(dev_opt.?) catch {
-                    open_failed = true;
+                const opened = openDevice(dev_opt.?) catch |err| {
+                    switch (err) {
+                        error.LibusbPermissionDenied => permission_denied = true,
+                        else => open_failed = true,
+                    }
                     continue;
                 };
                 return opened;
@@ -193,6 +201,7 @@ pub fn openFirstDeviceByVidPid(ctx: *c.libusb_context, vid: u16, pid: u16) !?*c.
         }
     }
 
+    if (matched_device and permission_denied) return error.LibusbPermissionDenied;
     if (matched_device and open_failed) return error.LibusbOpenFailed;
     return null;
 }

@@ -10,6 +10,8 @@ pub const BootstrapState = enum {
     ready,
     /// 设备存在，但当前不可用或忙碌 / Device is present but currently unavailable/busy.
     busy,
+    /// 设备存在，但访问被系统权限拒绝（常见于 Linux 缺少 udev 放行） / Device is present but access is denied by OS permissions (commonly missing udev rules on Linux).
+    permission_denied,
     /// 固件或 FPGA 引导失败 / Firmware/FPGA bootstrap failed.
     failed,
 };
@@ -71,8 +73,11 @@ pub fn isExactId(id: UsbId, vid: u16, pid: u16) bool {
 
 /// 按 PXView 兼容顺序打开设备并上传固件/位流 / Opens the device and uploads firmware/bitstream in PXView-compatible order.
 pub fn preparePxLogicDevice(dev: *c.libusb_device, options: BootstrapOptions) BootstrapState {
-    const handle = usb.openDevice(dev) catch {
-        return .busy;
+    const handle = usb.openDevice(dev) catch |err| {
+        return switch (err) {
+            error.LibusbPermissionDenied => .permission_denied,
+            else => .busy,
+        };
     };
     defer usb.closeDevice(handle);
 

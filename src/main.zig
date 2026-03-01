@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const args = @import("args.zig");
 const capture = @import("capture.zig");
 const usb = @import("usb.zig");
@@ -80,6 +81,19 @@ fn verboseLog(enabled: bool, writer: anytype, comptime fmt: []const u8, values: 
     try writer.print(fmt, values);
 }
 
+fn printLinuxUdevHint(stderr: anytype) !void {
+    if (builtin.os.tag != .linux) return;
+    try stderr.writeAll(
+        \\hint: permission denied while opening PX Logic USB device on Linux.
+        \\hint: install udev rule and reload:
+        \\  sudo cp packaging/udev/99-pxlobster.rules /etc/udev/rules.d/99-pxlobster.rules
+        \\  sudo udevadm control --reload-rules
+        \\  sudo udevadm trigger
+        \\hint: replug the device or re-login your session.
+        \\
+    );
+}
+
 /// 枚举已连接设备并打印受支持 PX Logic 识别信息 / Enumerates connected devices and prints supported PX Logic identities.
 fn scanUsbDevices(stdout: anytype, stderr: anytype, verbose: bool) !void {
     try verboseLog(verbose, stderr, "verbose: scan start\n", .{});
@@ -144,6 +158,7 @@ fn primeFirmware(stdout: anytype, stderr: anytype, verbose: bool) !void {
     try verboseLog(verbose, stderr, "verbose: device count={d}\n", .{count});
 
     var found_supported = false;
+    var saw_permission_denied = false;
     const count_usize: usize = @intCast(count);
     const device_slice = @as([*]?*c.libusb_device, @ptrCast(device_list))[0..count_usize];
     for (device_slice) |dev_opt| {
@@ -166,6 +181,10 @@ fn primeFirmware(stdout: anytype, stderr: anytype, verbose: bool) !void {
                 try stdout.print("{X:0>4}:{X:0>4}  {s}  [fw loaded]\n", .{ vid, pid, label });
             },
             .busy => try stdout.print("{X:0>4}:{X:0>4}  PX-Logic (Busy)\n", .{ vid, pid }),
+            .permission_denied => {
+                saw_permission_denied = true;
+                try stdout.print("{X:0>4}:{X:0>4}  PX-Logic (permission denied)\n", .{ vid, pid });
+            },
             .failed => try stdout.print("{X:0>4}:{X:0>4}  PX-Logic (firmware load failed)\n", .{ vid, pid }),
         }
     }
@@ -173,6 +192,9 @@ fn primeFirmware(stdout: anytype, stderr: anytype, verbose: bool) !void {
     if (!found_supported) {
         try stdout.writeAll("No supported devices found.\n");
         try verboseLog(verbose, stderr, "verbose: no supported devices detected\n", .{});
+    }
+    if (saw_permission_denied) {
+        try printLinuxUdevHint(stderr);
     }
 }
 
@@ -232,6 +254,9 @@ fn runCapture(parsed: args.ParsedCommand, stdout: anytype, stderr: anytype) !voi
         },
     }) catch |err| {
         try stderr.print("capture failed: {s}\n", .{@errorName(err)});
+        if (err == error.LibusbPermissionDenied) {
+            try printLinuxUdevHint(stderr);
+        }
         try stderr.flush();
         std.process.exit(1);
     };
