@@ -74,10 +74,13 @@ jobs:
           $probeRoot = Join-Path $env:RUNNER_TEMP "portable-smoke"
           $linkDir = Join-Path $probeRoot "links"
           New-Item -ItemType Directory -Path $linkDir -Force | Out-Null
-          $realExe = Resolve-Path "${{ matrix.bin_path }}"
+          $realExe = (Resolve-Path "${{ matrix.bin_path }}").ProviderPath
           $linkExe = Join-Path $linkDir "pxlobster.exe"
 
-          & fsutil hardlink create $linkExe $realExe | Out-Null
+          New-Item -ItemType HardLink -Path $linkExe -Target $realExe -Force | Out-Null
+          if (-not (Test-Path $linkExe)) {
+            throw "Hardlink was not created at $linkExe"
+          }
 
           & $realExe --help | Out-Null
           if ($LASTEXITCODE -ne 0) {
