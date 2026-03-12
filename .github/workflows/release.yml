@@ -72,14 +72,14 @@ jobs:
         shell: pwsh
         run: |
           $probeRoot = Join-Path $env:RUNNER_TEMP "portable-smoke"
-          $linkDir = Join-Path $probeRoot "links"
-          New-Item -ItemType Directory -Path $linkDir -Force | Out-Null
+          $probeDir = Join-Path $probeRoot "probe"
+          New-Item -ItemType Directory -Path $probeDir -Force | Out-Null
           $realExe = (Resolve-Path "${{ matrix.bin_path }}").ProviderPath
-          $linkExe = Join-Path $linkDir "pxlobster.exe"
+          $probeExe = Join-Path $probeDir "pxlobster.exe"
 
-          New-Item -ItemType HardLink -Path $linkExe -Target $realExe -Force | Out-Null
-          if (-not (Test-Path $linkExe)) {
-            throw "Hardlink was not created at $linkExe"
+          Copy-Item $realExe $probeExe -Force
+          if (-not (Test-Path $probeExe)) {
+            throw "Probe EXE was not copied to $probeExe"
           }
 
           & $realExe --help | Out-Null
@@ -87,14 +87,14 @@ jobs:
             throw "Direct EXE --help failed with exit code $LASTEXITCODE"
           }
 
-          & $linkExe --help | Out-Null
+          & $probeExe --help | Out-Null
           if ($LASTEXITCODE -ne 0) {
-            throw "Hard-linked EXE --help failed with exit code $LASTEXITCODE"
+            throw "Relocated EXE --help failed with exit code $LASTEXITCODE"
           }
 
-          & $linkExe --version 2>$null
+          & $probeExe --version 2>$null
           if ($LASTEXITCODE -ne 2) {
-            throw "Hard-linked EXE --version expected exit code 2, got $LASTEXITCODE"
+            throw "Relocated EXE --version expected exit code 2, got $LASTEXITCODE"
           }
 
       - name: Package Artifacts (Unix)
