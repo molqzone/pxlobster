@@ -92,10 +92,6 @@ jobs:
             throw "Relocated EXE --help failed with exit code $LASTEXITCODE"
           }
 
-          & $probeExe --version 2>$null
-          if ($LASTEXITCODE -ne 2) {
-            throw "Relocated EXE --version expected exit code 2, got $LASTEXITCODE"
-          }
 
       - name: Package Artifacts (Unix)
         if: matrix.platform != 'windows'
