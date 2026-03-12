@@ -14,6 +14,7 @@ PXLobster is a command-line host tool for PXLogic logic analyzers.
 
 - Device scan: `--scan`
 - Firmware/bitstream injection: `--prime-fw`
+- Capture stop: `--stop`
 - Capture output: `bin` / `sr`
 - Target control: `--samples` (bytes) or `--time` (ms)
 - Trigger configuration: `-t/--triggers`
@@ -24,7 +25,8 @@ PXLobster is a command-line host tool for PXLogic logic analyzers.
 Requirements:
 
 - Zig `0.15.2+`
-- System `libusb-1.0` runtime
+- Linux / macOS: system `libusb-1.0` runtime
+- Windows: no extra `libusb-1.0.dll` is required; release assets are self-contained
 
 ## Linux udev Access
 
@@ -43,6 +45,7 @@ Then replug the device, or re-login your current session.
 ```text
 pxlobster [--verbose] --scan
 pxlobster [--verbose] --prime-fw
+pxlobster [--verbose] --stop
 pxlobster [--verbose] -o <path> --format <bin|sr> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
 pxlobster [--verbose] --stdout --format <bin> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
 ```
@@ -55,6 +58,9 @@ pxlobster --scan
 
 # Inject firmware
 pxlobster --prime-fw
+
+# Stop an active capture
+pxlobster --stop
 
 # Capture to a bin file
 pxlobster -o /tmp/capture.bin --format bin --samples 65536

@@ -1,14 +1,74 @@
 const std = @import("std");
 
+const windows_libusb_sources = [_][]const u8{
+    "core.c",
+    "descriptor.c",
+    "hotplug.c",
+    "io.c",
+    "strerror.c",
+    "sync.c",
+    "os/events_windows.c",
+    "os/threads_windows.c",
+    "os/windows_common.c",
+    "os/windows_usbdk.c",
+    "os/windows_winusb.c",
+};
+
+fn addLibUsbHeaders(
+    artifact: *std.Build.Step.Compile,
+    libusb_dep: *std.Build.Dependency,
+) void {
+    artifact.addIncludePath(libusb_dep.path(""));
+    artifact.addIncludePath(libusb_dep.path("libusb"));
+}
+
+fn buildBundledWindowsLibUsb(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    libusb_dep: *std.Build.Dependency,
+) *std.Build.Step.Compile {
+    const lib = b.addLibrary(.{
+        .linkage = .static,
+        .name = "usb-1.0",
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+
+    lib.addIncludePath(b.path("src/libusb_windows"));
+    lib.addIncludePath(libusb_dep.path("libusb"));
+    lib.addIncludePath(libusb_dep.path("libusb/os"));
+    lib.root_module.addCMacro("_WIN32_WINNT", "0x0600");
+    lib.root_module.addCMacro("_CRT_SECURE_NO_WARNINGS", "1");
+    if (optimize != .Debug) {
+        lib.root_module.addCMacro("NDEBUG", "1");
+    }
+    lib.addCSourceFiles(.{
+        .root = libusb_dep.path("libusb"),
+        .files = &windows_libusb_sources,
+        .flags = &.{"-std=gnu11"},
+    });
+
+    return lib;
+}
+
 fn configureLibUsb(
     b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
     artifact: *std.Build.Step.Compile,
+    libusb_dep: *std.Build.Dependency,
     libusb_lib_dir: ?[]const u8,
     libusb_link_file: ?[]const u8,
 ) void {
-    if (b.lazyDependency("libusb", .{})) |libusb_dep| {
-        artifact.addIncludePath(libusb_dep.path(""));
-        artifact.addIncludePath(libusb_dep.path("libusb"));
+    addLibUsbHeaders(artifact, libusb_dep);
+
+    if (target.result.os.tag == .windows and libusb_lib_dir == null and libusb_link_file == null) {
+        artifact.root_module.linkLibrary(buildBundledWindowsLibUsb(b, target, optimize, libusb_dep));
+        return;
     }
 
     artifact.linkLibC();
@@ -32,6 +92,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const libusb_lib_dir = b.option([]const u8, "libusb-lib-dir", "Custom libusb library directory");
     const libusb_link_file = b.option([]const u8, "libusb-link-file", "Custom libusb import/static archive");
+    const libusb_dep = b.dependency("libusb", .{});
 
     const mod = b.addModule("pxlobster", .{
         .root_source_file = b.path("src/root.zig"),
@@ -58,7 +119,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    configureLibUsb(b, exe, libusb_lib_dir, libusb_link_file);
+    configureLibUsb(b, target, optimize, exe, libusb_dep, libusb_lib_dir, libusb_link_file);
 
     b.installArtifact(exe);
 
@@ -76,14 +137,14 @@ pub fn build(b: *std.Build) void {
     const mod_tests = b.addTest(.{
         .root_module = mod,
     });
-    configureLibUsb(b, mod_tests, libusb_lib_dir, libusb_link_file);
+    configureLibUsb(b, target, optimize, mod_tests, libusb_dep, libusb_lib_dir, libusb_link_file);
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
     const exe_tests = b.addTest(.{
         .root_module = exe.root_module,
     });
-    configureLibUsb(b, exe_tests, libusb_lib_dir, libusb_link_file);
+    configureLibUsb(b, target, optimize, exe_tests, libusb_dep, libusb_lib_dir, libusb_link_file);
 
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
@@ -98,7 +159,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    configureLibUsb(b, capture_tests, libusb_lib_dir, libusb_link_file);
+    configureLibUsb(b, target, optimize, capture_tests, libusb_dep, libusb_lib_dir, libusb_link_file);
     const run_capture_tests = b.addRunArtifact(capture_tests);
 
     const args_clap_integration = b.addExecutable(.{

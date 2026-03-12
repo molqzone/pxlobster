@@ -41,3 +41,46 @@ jobs:
 
       - name: Build ReleaseSafe
         run: zig build -Doptimize=ReleaseSafe
+
+  windows-build:
+    name: Build And Smoke Test (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build ReleaseSafe
+        shell: pwsh
+        run: zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe
+
+      - name: Smoke Test Portable Path
+        shell: pwsh
+        run: |
+          $probeRoot = Join-Path $env:RUNNER_TEMP "portable-smoke"
+          $linkDir = Join-Path $probeRoot "links"
+          New-Item -ItemType Directory -Path $linkDir -Force | Out-Null
+          $realExe = Resolve-Path "zig-out/bin/pxlobster.exe"
+          $linkExe = Join-Path $linkDir "pxlobster.exe"
+
+          & fsutil hardlink create $linkExe $realExe | Out-Null
+
+          & $realExe --help | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "Direct EXE --help failed with exit code $LASTEXITCODE"
+          }
+
+          & $linkExe --help | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "Hard-linked EXE --help failed with exit code $LASTEXITCODE"
+          }
+
+          & $linkExe --version 2>$null
+          if ($LASTEXITCODE -ne 2) {
+            throw "Hard-linked EXE --version expected exit code 2, got $LASTEXITCODE"
+          }

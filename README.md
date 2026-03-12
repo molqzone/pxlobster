@@ -14,6 +14,7 @@ PXLobster 是一个面向 PXLogic 逻辑分析仪的命令行上位机程序。
 
 - 设备扫描：`--scan`
 - 固件/位流注入：`--prime-fw`
+- 采集停止：`--stop`
 - 采集输出：`bin` / `sr`
 - 目标控制：`--samples`（字节）或 `--time`（毫秒）
 - 触发配置：`-t/--triggers`
@@ -24,7 +25,8 @@ PXLobster 是一个面向 PXLogic 逻辑分析仪的命令行上位机程序。
 环境要求：
 
 - Zig `0.15.2+`
-- 系统 `libusb-1.0` 运行库
+- Linux / macOS: 系统 `libusb-1.0` 运行库
+- Windows: 无需额外安装 `libusb-1.0.dll`，发布资产为自包含 EXE
 
 ## Linux udev 放行
 
@@ -43,6 +45,7 @@ sudo udevadm trigger
 ```text
 pxlobster [--verbose] --scan
 pxlobster [--verbose] --prime-fw
+pxlobster [--verbose] --stop
 pxlobster [--verbose] -o <path> --format <bin|sr> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
 pxlobster [--verbose] --stdout --format <bin> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
 ```
@@ -55,6 +58,9 @@ pxlobster --scan
 
 # 注入固件
 pxlobster --prime-fw
+
+# 停止活动采集
+pxlobster --stop
 
 # 采集到 bin 文件
 pxlobster -o /tmp/capture.bin --format bin --samples 65536
