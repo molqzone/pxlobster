@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### 快速修改
+- **[构建]**: Windows bundled libusb 的 `config.h` 改为由 Zig 构建时生成，移除仓库内手写头文件 — by molqzone
+  - 类型: 快速修改（无方案包）
+  - 文件: build.zig, src/libusb_windows/config.h
+
 ## [0.2.4] - 2026-03-12
 
 ### 修复

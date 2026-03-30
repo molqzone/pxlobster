@@ -14,6 +14,35 @@ const windows_libusb_sources = [_][]const u8{
     "os/windows_winusb.c",
 };
 
+fn addWindowsLibUsbConfigHeader(b: *std.Build) *std.Build.Step.ConfigHeader {
+    const config_template = b.addWriteFiles();
+    const config_template_path = config_template.add("libusb/config.h.in",
+        \\#ifndef PXLIBUSB_CONFIG_H
+        \\#define PXLIBUSB_CONFIG_H
+        \\
+        \\/* Minimal libusb config for Windows GNU/Clang static builds. */
+        \\
+        \\#define DEFAULT_VISIBILITY @DEFAULT_VISIBILITY@
+        \\#define ENABLE_LOGGING @ENABLE_LOGGING@
+        \\#define PLATFORM_WINDOWS @PLATFORM_WINDOWS@
+        \\#define PRINTF_FORMAT(a, b) @PRINTF_FORMAT@
+        \\
+        \\#endif
+        \\
+    );
+
+    return b.addConfigHeader(.{
+        .style = .{ .autoconf_at = config_template_path },
+        .include_path = "config.h",
+        .include_guard_override = "PXLIBUSB_CONFIG_H",
+    }, .{
+        .DEFAULT_VISIBILITY = "",
+        .ENABLE_LOGGING = 1,
+        .PLATFORM_WINDOWS = 1,
+        .PRINTF_FORMAT = "__attribute__((format(printf, a, b)))",
+    });
+}
+
 fn addLibUsbHeaders(
     artifact: *std.Build.Step.Compile,
     libusb_dep: *std.Build.Dependency,
@@ -38,9 +67,9 @@ fn buildBundledWindowsLibUsb(
         }),
     });
 
-    lib.addIncludePath(b.path("src/libusb_windows"));
     lib.addIncludePath(libusb_dep.path("libusb"));
     lib.addIncludePath(libusb_dep.path("libusb/os"));
+    lib.root_module.addConfigHeader(addWindowsLibUsbConfigHeader(b));
     lib.root_module.addCMacro("_WIN32_WINNT", "0x0600");
     lib.root_module.addCMacro("_CRT_SECURE_NO_WARNINGS", "1");
     if (optimize != .Debug) {
