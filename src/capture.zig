@@ -151,7 +151,7 @@ const CaptureSignalGuard = struct {
     }
 };
 
-fn captureSignalHandler(_: i32) callconv(.c) void {
+fn captureSignalHandler(_: std.posix.SIG) callconv(.c) void {
     capture_interrupt_requested.store(true, .release);
 }
 
