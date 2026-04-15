@@ -9,7 +9,7 @@ const max_cross_stripe_bytes: usize = max_supported_channels * @sizeOf(u64);
 /// 异步采集写线程共享上下文 / Shared state for asynchronous capture writer threads.
 pub const RawWriterContext = struct {
     ring: *ringbuffer.RingBuffer,
-    file: std.fs.File,
+    file: std.Io.File,
     target_bytes: usize,
     continuous: bool = false,
     decode_cross: bool = false,
@@ -47,11 +47,14 @@ fn runPassthroughWriter(ctx: *RawWriterContext) void {
         if (got == 0) {
             if (ctx.producer_done.load(.acquire)) break;
             if (ctx.stop_requested.load(.acquire) and ctx.ring.available() == 0) break;
-            std.Thread.sleep(1 * std.time.ns_per_ms);
+            _ = std.Io.Clock.Duration.sleep(.{
+                .clock = .awake,
+                .raw = .fromMilliseconds(1),
+            }, std.Options.debug_io) catch {};
             continue;
         }
 
-        ctx.file.writeAll(scratch[0..got]) catch {
+        ctx.file.writeStreamingAll(std.Options.debug_io, scratch[0..got]) catch {
             ctx.failed.store(true, .release);
             ctx.stop_requested.store(true, .release);
             break;
@@ -66,7 +69,7 @@ fn runPassthroughWriter(ctx: *RawWriterContext) void {
     }
 
     if (ctx.sync_on_finish) {
-        ctx.file.sync() catch {
+        ctx.file.sync(std.Options.debug_io) catch {
             ctx.failed.store(true, .release);
             ctx.stop_requested.store(true, .release);
         };
@@ -105,7 +108,10 @@ fn runDecodedCrossWriter(ctx: *RawWriterContext) void {
         if (got == 0) {
             if (ctx.producer_done.load(.acquire)) break;
             if (ctx.stop_requested.load(.acquire) and ctx.ring.available() == 0) break;
-            std.Thread.sleep(1 * std.time.ns_per_ms);
+            _ = std.Io.Clock.Duration.sleep(.{
+                .clock = .awake,
+                .raw = .fromMilliseconds(1),
+            }, std.Options.debug_io) catch {};
             continue;
         }
 
@@ -122,7 +128,7 @@ fn runDecodedCrossWriter(ctx: *RawWriterContext) void {
                 ctx.stop_requested.store(true, .release);
                 break;
             };
-            ctx.file.writeAll(decoded[0..produced]) catch {
+            ctx.file.writeStreamingAll(std.Options.debug_io, decoded[0..produced]) catch {
                 ctx.failed.store(true, .release);
                 ctx.stop_requested.store(true, .release);
                 break;
@@ -148,7 +154,7 @@ fn runDecodedCrossWriter(ctx: *RawWriterContext) void {
     }
 
     if (ctx.sync_on_finish) {
-        ctx.file.sync() catch {
+        ctx.file.sync(std.Options.debug_io) catch {
             ctx.failed.store(true, .release);
             ctx.stop_requested.store(true, .release);
         };
@@ -253,8 +259,8 @@ test "runRawWriter continuous mode ignores target_bytes limit" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const file = try tmp.dir.createFile("loop.bin", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.testing.io, "loop.bin", .{ .read = true });
+    defer file.close(std.testing.io);
 
     var writer_ctx = RawWriterContext{
         .ring = &rb,
@@ -269,9 +275,8 @@ test "runRawWriter continuous mode ignores target_bytes limit" {
     try std.testing.expect(!writer_ctx.failed.load(.acquire));
     try std.testing.expectEqual(@as(u64, payload.len), writer_ctx.bytes_written.load(.acquire));
 
-    try file.seekTo(0);
     var written: [payload.len]u8 = undefined;
-    const read_len = try file.readAll(written[0..]);
+    const read_len = try file.readPositionalAll(std.testing.io, written[0..], 0);
     try std.testing.expectEqual(payload.len, read_len);
     try std.testing.expectEqualSlices(u8, payload[0..], written[0..]);
 }
@@ -288,8 +293,8 @@ test "runRawWriter can skip sync on finish for pipe-compatible output" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const file = try tmp.dir.createFile("nosync.bin", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.testing.io, "nosync.bin", .{ .read = true });
+    defer file.close(std.testing.io);
 
     var writer_ctx = RawWriterContext{
         .ring = &rb,
@@ -359,7 +364,10 @@ const DecodeCarryProducer = struct {
 
     fn run(ctx: *DecodeCarryProducer) void {
         _ = ctx.ring.push(ctx.first_chunk);
-        std.Thread.sleep(2 * std.time.ns_per_ms);
+        _ = std.Io.Clock.Duration.sleep(.{
+            .clock = .awake,
+            .raw = .fromMilliseconds(2),
+        }, std.Options.debug_io) catch {};
         _ = ctx.ring.push(ctx.second_chunk);
         ctx.producer_done.store(true, .release);
     }
@@ -385,8 +393,8 @@ test "runRawWriter decodes cross data across split chunks" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const file = try tmp.dir.createFile("decoded.bin", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.testing.io, "decoded.bin", .{ .read = true });
+    defer file.close(std.testing.io);
 
     var writer_ctx = RawWriterContext{
         .ring = &rb,
@@ -412,9 +420,8 @@ test "runRawWriter decodes cross data across split chunks" {
     try std.testing.expect(!writer_ctx.failed.load(.acquire));
     try std.testing.expectEqual(@as(u64, input.len), writer_ctx.bytes_written.load(.acquire));
 
-    try file.seekTo(0);
     var decoded: [16 * 8 * 2]u8 = undefined;
-    const read_len = try file.readAll(decoded[0..]);
+    const read_len = try file.readPositionalAll(std.testing.io, decoded[0..], 0);
     try std.testing.expectEqual(decoded.len, read_len);
 
     var sample_index: usize = 0;

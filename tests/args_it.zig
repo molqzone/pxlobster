@@ -136,6 +136,14 @@ pub fn main() !void {
         else => return error.ExpectedStopCommand,
     }
 
+    const version_argv = [_][]const u8{ "pxlobster", "--version" };
+    var version_result = try args.parseArgsFromSlice(&version_argv, std.heap.page_allocator);
+    defer args.deinitParsedCommand(&version_result, std.heap.page_allocator);
+    switch (version_result.command) {
+        .version => {},
+        else => return error.ExpectedVersionCommand,
+    }
+
     const time_samples_conflict_argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--time", "10", "--samples", "4096" };
     const time_samples_conflict = args.parseArgsFromSlice(&time_samples_conflict_argv, std.heap.page_allocator);
     if (time_samples_conflict) |_| {
@@ -187,6 +195,14 @@ pub fn main() !void {
     const stop_conflict_argv = [_][]const u8{ "pxlobster", "--stop", "--stdout", "--format", "bin" };
     const stop_conflict_result = args.parseArgsFromSlice(&stop_conflict_argv, std.heap.page_allocator);
     if (stop_conflict_result) |_| {
+        return error.ExpectedInvalidArgument;
+    } else |err| {
+        if (err != error.InvalidArgument) return err;
+    }
+
+    const version_conflict_argv = [_][]const u8{ "pxlobster", "--version", "--stdout", "--format", "bin" };
+    const version_conflict_result = args.parseArgsFromSlice(&version_conflict_argv, std.heap.page_allocator);
+    if (version_conflict_result) |_| {
         return error.ExpectedInvalidArgument;
     } else |err| {
         if (err != error.InvalidArgument) return err;

@@ -24,7 +24,7 @@ PXLobster is a command-line host tool for PXLogic logic analyzers.
 
 Requirements:
 
-- Zig `0.15.2+`
+- Zig `0.16.0+`
 - Linux / macOS: system `libusb-1.0` runtime
 - Windows: no extra `libusb-1.0.dll` is required; release assets are self-contained
 
@@ -43,6 +43,7 @@ Then replug the device, or re-login your current session.
 ## Usage
 
 ```text
+pxlobster --version
 pxlobster [--verbose] --scan
 pxlobster [--verbose] --prime-fw
 pxlobster [--verbose] --stop
@@ -53,6 +54,9 @@ pxlobster [--verbose] --stdout --format <bin> [--samples <bytes>|--time <ms>] [-
 Common examples:
 
 ```bash
+# Show version
+pxlobster --version
+
 # Scan devices
 pxlobster --scan
 
@@ -78,6 +82,7 @@ Notes:
 - `--samples` and `--time` are mutually exclusive
 - `--stdout` and `--output-file` are mutually exclusive
 - `--stdout` supports `--format bin` only
+- `--version` is mutually exclusive with other command modes
 
 ## License
 

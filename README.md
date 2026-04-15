@@ -24,7 +24,7 @@ PXLobster 是一个面向 PXLogic 逻辑分析仪的命令行上位机程序。
 
 环境要求：
 
-- Zig `0.15.2+`
+- Zig `0.16.0+`
 - Linux / macOS: 系统 `libusb-1.0` 运行库
 - Windows: 无需额外安装 `libusb-1.0.dll`，发布资产为自包含 EXE
 
@@ -43,6 +43,7 @@ sudo udevadm trigger
 ## 用法
 
 ```text
+pxlobster --version
 pxlobster [--verbose] --scan
 pxlobster [--verbose] --prime-fw
 pxlobster [--verbose] --stop
@@ -53,6 +54,9 @@ pxlobster [--verbose] --stdout --format <bin> [--samples <bytes>|--time <ms>] [-
 常用示例：
 
 ```bash
+# 查看版本
+pxlobster --version
+
 # 扫描设备
 pxlobster --scan
 
@@ -78,6 +82,7 @@ pxlobster --stdout --format bin --samples 65536 > /tmp/capture_stdout.bin
 - `--samples` 与 `--time` 互斥
 - `--stdout` 与 `--output-file` 互斥
 - `--stdout` 仅支持 `--format bin`
+- `--version` 与其他命令模式互斥
 
 ## License
 
