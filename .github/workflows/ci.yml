@@ -26,7 +26,9 @@ jobs:
       - name: Prepare Zig Cache Dirs
         run: |
           mkdir -p "${{ runner.temp }}/zig-global-cache"
+          mkdir -p "${{ runner.temp }}/zig-global-cache/tmp"
           mkdir -p "${{ github.workspace }}/.zig-cache"
+          mkdir -p "${{ github.workspace }}/.zig-cache/tmp"
           mkdir -p "${{ github.workspace }}/zig-pkg"
 
       - name: Install libusb
@@ -67,7 +69,9 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/zig-global-cache" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/zig-global-cache/tmp" -Force | Out-Null
           New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE/.zig-cache" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE/.zig-cache/tmp" -Force | Out-Null
           New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE/zig-pkg" -Force | Out-Null
 
       - name: Setup Zig
