@@ -18,18 +18,10 @@ jobs:
   build-and-test:
     name: Build And Test (Ubuntu)
     runs-on: ubuntu-latest
-    env:
-      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
-      ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Prepare Zig Cache Dirs
-        run: |
-          mkdir -p "${{ github.workspace }}/.zig-cache"
-          mkdir -p "${{ github.workspace }}/zig-pkg"
 
       - name: Install libusb
         run: |
@@ -40,6 +32,7 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+          use-cache: false
 
       - name: Check Formatting
         run: zig fmt --check build.zig build.zig.zon src tests
@@ -53,24 +46,16 @@ jobs:
   windows-build:
     name: Build And Smoke Test (Windows)
     runs-on: windows-latest
-    env:
-      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}\\.zig-cache
-      ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}\\.zig-cache
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare Zig Cache Dirs
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE/.zig-cache" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE/zig-pkg" -Force | Out-Null
-
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+          use-cache: false
 
       - name: Build ReleaseSafe
         shell: pwsh
