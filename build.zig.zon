@@ -32,6 +32,10 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
+        .clap = .{
+            .url = "https://github.com/Hejsil/zig-clap/archive/refs/tags/0.12.0.tar.gz",
+            .hash = "clap-0.12.0-oBajB7foAQDqlSwaSG5g0yq7xGbQARUsBk5T64gAOqP5",
+        },
         .libusb = .{
             .url = "https://github.com/libusb/libusb/archive/refs/tags/v1.0.29.zip",
             .hash = "N-V-__8AAGn9GgCvOQYc8zh_T6CM7Rf1ab9lIiLhtZg_Dczu",
@@ -41,7 +45,6 @@
         "build.zig",
         "build.zig.zon",
         "src",
-        "third_party",
         // For example...
         //"LICENSE",
         //"README.md",

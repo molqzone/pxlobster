@@ -135,6 +135,10 @@ pub fn build(b: *std.Build) void {
     const libusb_lib_dir = b.option([]const u8, "libusb-lib-dir", "Custom libusb library directory");
     const libusb_link_file = b.option([]const u8, "libusb-link-file", "Custom libusb import/static archive");
     const libusb_dep = b.dependency("libusb", .{});
+    const clap_dep = b.dependency("clap", .{
+        .target = target,
+        .optimize = optimize,
+    });
     const libusb_translate = b.addTranslateC(.{
         .root_source_file = libusb_dep.path("libusb/libusb.h"),
         .target = target,
@@ -164,11 +168,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const clap_mod = b.createModule(.{
-        .root_source_file = b.path("third_party/clap.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    const clap_mod = clap_dep.module("clap");
 
     const exe = b.addExecutable(.{
         .name = "pxlobster",
