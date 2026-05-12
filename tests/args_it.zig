@@ -15,6 +15,8 @@ pub fn main() !void {
         "0=1,1=r",
         "--samplerate",
         "25000000",
+        "--threshold",
+        "1.8",
     }, std.heap.page_allocator);
     defer args.deinitParsedCommand(&cmd, std.heap.page_allocator);
 
@@ -28,6 +30,7 @@ pub fn main() !void {
             if (capture_cmd.time_ms != null) return error.UnexpectedTimeSetting;
             if (capture_cmd.op_mode != .stream) return error.UnexpectedOperationMode;
             if (capture_cmd.samplerate_hz != 25_000_000) return error.UnexpectedSamplerate;
+            if (@abs(capture_cmd.threshold_volts - 1.8) > 0.000_001) return error.UnexpectedThreshold;
             if (capture_cmd.trigger_one != 0x1) return error.UnexpectedTriggerOneMask;
             if (capture_cmd.trigger_rise != 0x2) return error.UnexpectedTriggerRiseMask;
             if (!capture_cmd.triggers_specified) return error.ExpectedTriggersSpecified;
@@ -179,6 +182,14 @@ pub fn main() !void {
     const legacy_samplerate_argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--samplerate", "24000000" };
     const legacy_samplerate = args.parseArgsFromSlice(&legacy_samplerate_argv, std.heap.page_allocator);
     if (legacy_samplerate) |_| {
+        return error.ExpectedInvalidArgument;
+    } else |err| {
+        if (err != error.InvalidArgument) return err;
+    }
+
+    const invalid_threshold_argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--threshold", "6.1" };
+    const invalid_threshold = args.parseArgsFromSlice(&invalid_threshold_argv, std.heap.page_allocator);
+    if (invalid_threshold) |_| {
         return error.ExpectedInvalidArgument;
     } else |err| {
         if (err != error.InvalidArgument) return err;

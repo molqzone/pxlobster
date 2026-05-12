@@ -18,6 +18,7 @@ PXLobster is a command-line host tool for PXLogic logic analyzers.
 - Capture output: `bin` / `sr`
 - Target control: `--samples` (bytes) or `--time` (ms)
 - Trigger configuration: `-t/--triggers`
+- Threshold voltage configuration: `--threshold`
 - Pipe output: `--stdout` (for `bin` only)
 
 ## Build
@@ -47,8 +48,8 @@ pxlobster --version
 pxlobster [--verbose] --scan
 pxlobster [--verbose] --prime-fw
 pxlobster [--verbose] --stop
-pxlobster [--verbose] -o <path> --format <bin|sr> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
-pxlobster [--verbose] --stdout --format <bin> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
+pxlobster [--verbose] -o <path> --format <bin|sr> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>] [--threshold <volts>]
+pxlobster [--verbose] --stdout --format <bin> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>] [--threshold <volts>]
 ```
 
 Common examples:
@@ -72,6 +73,9 @@ pxlobster -o /tmp/capture.bin --format bin --samples 65536
 # Capture to an sr file
 pxlobster -o /tmp/capture.sr --format sr --samples 1048576 --samplerate 25000000
 
+# Capture using a 1.8V logic threshold
+pxlobster -o /tmp/capture.bin --format bin --samples 65536 --threshold 1.8
+
 # Stdout piping (bin)
 pxlobster --stdout --format bin --samples 65536 > /tmp/capture_stdout.bin
 ```
@@ -82,6 +86,7 @@ Notes:
 - `--samples` and `--time` are mutually exclusive
 - `--stdout` and `--output-file` are mutually exclusive
 - `--stdout` supports `--format bin` only
+- `--threshold` is in volts, accepts `0.0` to `6.0`, and defaults to `2.0`
 - `--version` is mutually exclusive with other command modes
 
 ## License

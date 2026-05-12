@@ -18,6 +18,7 @@ PXLobster 是一个面向 PXLogic 逻辑分析仪的命令行上位机程序。
 - 采集输出：`bin` / `sr`
 - 目标控制：`--samples`（字节）或 `--time`（毫秒）
 - 触发配置：`-t/--triggers`
+- 阈值电压配置：`--threshold`
 - 管道输出：`--stdout`（仅 `bin`）
 
 ## 构建
@@ -47,8 +48,8 @@ pxlobster --version
 pxlobster [--verbose] --scan
 pxlobster [--verbose] --prime-fw
 pxlobster [--verbose] --stop
-pxlobster [--verbose] -o <path> --format <bin|sr> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
-pxlobster [--verbose] --stdout --format <bin> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
+pxlobster [--verbose] -o <path> --format <bin|sr> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>] [--threshold <volts>]
+pxlobster [--verbose] --stdout --format <bin> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>] [--threshold <volts>]
 ```
 
 常用示例：
@@ -72,6 +73,9 @@ pxlobster -o /tmp/capture.bin --format bin --samples 65536
 # 采集到 sr 文件
 pxlobster -o /tmp/capture.sr --format sr --samples 1048576 --samplerate 25000000
 
+# 使用 1.8V 逻辑阈值采集
+pxlobster -o /tmp/capture.bin --format bin --samples 65536 --threshold 1.8
+
 # stdout 管道输出（bin）
 pxlobster --stdout --format bin --samples 65536 > /tmp/capture_stdout.bin
 ```
@@ -82,6 +86,7 @@ pxlobster --stdout --format bin --samples 65536 > /tmp/capture_stdout.bin
 - `--samples` 与 `--time` 互斥
 - `--stdout` 与 `--output-file` 互斥
 - `--stdout` 仅支持 `--format bin`
+- `--threshold` 单位为 V，范围为 `0.0` 到 `6.0`，默认 `2.0`
 - `--version` 与其他命令模式互斥
 
 ## License

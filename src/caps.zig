@@ -3,6 +3,13 @@ const std = @import("std");
 /// 默认采样率（当 CLI 未显式覆盖采集速度时使用） / Default samplerate used when the CLI does not override capture speed.
 pub const default_capture_samplerate_hz: u64 = 250_000_000;
 
+/// 默认逻辑阈值电压，和 PXView 默认值保持一致 / Default logic threshold voltage, matching PXView's default.
+pub const default_threshold_volts: f64 = 2.0;
+/// PXView UI 允许的最低逻辑阈值电压 / Minimum logic threshold voltage accepted by PXView UI.
+pub const min_threshold_volts: f64 = 0.0;
+/// PXView UI 允许的最高逻辑阈值电压 / Maximum logic threshold voltage accepted by PXView UI.
+pub const max_threshold_volts: f64 = 6.0;
+
 /// 设备采集工作模式 / Device capture operation mode.
 pub const OperationMode = enum {
     /// 采集固定窗口后停止 / Acquire a bounded capture window and stop.
@@ -23,6 +30,13 @@ pub const GpioTiming = struct {
 pub fn isSupportedSamplerate(samplerate_hz: u64) bool {
     _ = gpioTimingForSamplerate(samplerate_hz) catch return false;
     return true;
+}
+
+/// 校验逻辑阈值电压是否处于 PXView 兼容范围 / Validates a logic threshold voltage against the PXView-compatible range.
+pub fn isSupportedThresholdVolts(threshold_volts: f64) bool {
+    return std.math.isFinite(threshold_volts) and
+        threshold_volts >= min_threshold_volts and
+        threshold_volts <= max_threshold_volts;
 }
 
 /// 将 Hz 采样率转换为精确 GPIO 模式与分频寄存器值 / Converts a samplerate in Hz to the exact GPIO mode/divider register values.
@@ -79,4 +93,14 @@ test "isSupportedSamplerate accepts only pxview rates" {
     try std.testing.expect(!isSupportedSamplerate(24_000_000));
     try std.testing.expect(!isSupportedSamplerate(0));
     try std.testing.expect(!isSupportedSamplerate(12_345));
+}
+
+test "isSupportedThresholdVolts accepts only pxview threshold range" {
+    try std.testing.expect(isSupportedThresholdVolts(0.0));
+    try std.testing.expect(isSupportedThresholdVolts(default_threshold_volts));
+    try std.testing.expect(isSupportedThresholdVolts(6.0));
+    try std.testing.expect(!isSupportedThresholdVolts(-0.1));
+    try std.testing.expect(!isSupportedThresholdVolts(6.1));
+    try std.testing.expect(!isSupportedThresholdVolts(std.math.inf(f64)));
+    try std.testing.expect(!isSupportedThresholdVolts(std.math.nan(f64)));
 }

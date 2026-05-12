@@ -5,6 +5,7 @@ const clap = @import("clap");
 /// 默认采集字节数（当 `--samples` 与 `--time` 都未设置时使用） / Default capture size used when neither `--samples` nor `--time` is set.
 pub const default_capture_samples_bytes: usize = 8 * 1024 * 1024;
 const default_capture_samplerate_hz: u64 = caps.default_capture_samplerate_hz;
+const default_threshold_volts: f64 = caps.default_threshold_volts;
 
 /// 调用方显式选择的输出编码 / Output encoding chosen by the caller.
 pub const OutputFormat = enum {
@@ -36,6 +37,7 @@ pub const CaptureCommand = struct {
     decode_cross: bool = false,
     op_mode: OperationMode = .buffer,
     samplerate_hz: u64 = default_capture_samplerate_hz,
+    threshold_volts: f64 = default_threshold_volts,
     trigger_zero: u32 = 0,
     trigger_one: u32 = 0,
     trigger_rise: u32 = 0,
@@ -75,6 +77,7 @@ const clap_params = clap.parseParamsComptime(
     \\    --mode <str>...
     \\-t, --triggers <str>...
     \\    --samplerate <u64>...
+    \\    --threshold <f64>...
     \\
 );
 
@@ -195,6 +198,14 @@ fn commandFromParsedArgs(parsed_args: anytype) !ParsedCommand {
         samplerate_set = true;
     }
 
+    var threshold_volts: f64 = default_threshold_volts;
+    var threshold_set = false;
+    const threshold_values: []const f64 = @field(parsed_args, "threshold");
+    if (lastValue(f64, threshold_values)) |value| {
+        threshold_volts = parseThresholdVoltsValue(value) orelse return error.InvalidArgument;
+        threshold_set = true;
+    }
+
     var trigger_masks: TriggerMasks = .{};
     var triggers_set = false;
     const trigger_values: []const []const u8 = @field(parsed_args, "triggers");
@@ -203,7 +214,7 @@ fn commandFromParsedArgs(parsed_args: anytype) !ParsedCommand {
         triggers_set = true;
     }
 
-    const capture_requested = output_path != null or output_stdout or output_format_set or samples_set or time_set or decode_cross or op_mode_set or samplerate_set or triggers_set;
+    const capture_requested = output_path != null or output_stdout or output_format_set or samples_set or time_set or decode_cross or op_mode_set or samplerate_set or threshold_set or triggers_set;
     if (requested_read_only != null and capture_requested) return error.InvalidArgument;
 
     if (requested_read_only) |command| {
@@ -228,6 +239,7 @@ fn commandFromParsedArgs(parsed_args: anytype) !ParsedCommand {
             decode_cross,
             op_mode,
             samplerate_hz,
+            threshold_volts,
             trigger_masks,
             triggers_set,
         ) },
@@ -251,6 +263,7 @@ fn buildCaptureCommand(
     decode_cross: bool,
     op_mode: OperationMode,
     samplerate_hz: u64,
+    threshold_volts: f64,
     trigger_masks: TriggerMasks,
     triggers_specified: bool,
 ) !CaptureCommand {
@@ -267,6 +280,7 @@ fn buildCaptureCommand(
             .decode_cross = decode_cross,
             .op_mode = op_mode,
             .samplerate_hz = samplerate_hz,
+            .threshold_volts = threshold_volts,
             .trigger_zero = trigger_masks.trigger_zero,
             .trigger_one = trigger_masks.trigger_one,
             .trigger_rise = trigger_masks.trigger_rise,
@@ -284,6 +298,7 @@ fn buildCaptureCommand(
             .decode_cross = if (selected_output_format == .sr) true else decode_cross,
             .op_mode = op_mode,
             .samplerate_hz = samplerate_hz,
+            .threshold_volts = threshold_volts,
             .trigger_zero = trigger_masks.trigger_zero,
             .trigger_one = trigger_masks.trigger_one,
             .trigger_rise = trigger_masks.trigger_rise,
@@ -379,6 +394,18 @@ fn parseSamplerateValue(samplerate: u64) ?u64 {
     return samplerate;
 }
 
+/// 解析逻辑阈值电压 / Parses logic threshold voltage values.
+fn parseThresholdVolts(value: []const u8) ?f64 {
+    const threshold_volts = std.fmt.parseFloat(f64, value) catch return null;
+    return parseThresholdVoltsValue(threshold_volts);
+}
+
+/// 按 PXView 兼容范围校验逻辑阈值电压 / Validates logic threshold voltage against PXView-compatible limits.
+fn parseThresholdVoltsValue(threshold_volts: f64) ?f64 {
+    if (!caps.isSupportedThresholdVolts(threshold_volts)) return null;
+    return threshold_volts;
+}
+
 test "parseArgsFromSlice parses stdout capture options" {
     const argv = [_][]const u8{
         "pxlobster",
@@ -393,6 +420,8 @@ test "parseArgsFromSlice parses stdout capture options" {
         "0=1,1=r,2=f,3=0",
         "--samplerate",
         "25000000",
+        "--threshold",
+        "1.8",
     };
 
     const parsed = try parseArgsFromSlice(&argv, std.testing.allocator);
@@ -407,6 +436,7 @@ test "parseArgsFromSlice parses stdout capture options" {
             try std.testing.expect(capture_cmd.time_ms == null);
             try std.testing.expectEqual(OperationMode.stream, capture_cmd.op_mode);
             try std.testing.expectEqual(@as(u64, 25_000_000), capture_cmd.samplerate_hz);
+            try std.testing.expectApproxEqAbs(@as(f64, 1.8), capture_cmd.threshold_volts, 0.000_001);
             try std.testing.expectEqual(@as(u32, 1 << 3), capture_cmd.trigger_zero);
             try std.testing.expectEqual(@as(u32, 1 << 0), capture_cmd.trigger_one);
             try std.testing.expectEqual(@as(u32, 1 << 1), capture_cmd.trigger_rise);
@@ -436,6 +466,7 @@ test "parseArgsFromSlice leaves triggers_specified false by default" {
     switch (parsed.command) {
         .capture => |capture_cmd| {
             try std.testing.expect(!capture_cmd.triggers_specified);
+            try std.testing.expectApproxEqAbs(default_threshold_volts, capture_cmd.threshold_volts, 0.000_001);
         },
         else => return error.TestExpectedEqual,
     }
@@ -506,6 +537,15 @@ test "parseArgsFromSlice accepts samplerate from --samplerate" {
     }
 }
 
+test "parseArgsFromSlice accepts threshold voltage" {
+    const argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--threshold", "3.3" };
+    const parsed = try parseArgsFromSlice(&argv, std.testing.allocator);
+    switch (parsed.command) {
+        .capture => |capture_cmd| try std.testing.expectApproxEqAbs(@as(f64, 3.3), capture_cmd.threshold_volts, 0.000_001),
+        else => return error.TestExpectedEqual,
+    }
+}
+
 test "parseArgsFromSlice rejects invalid mode" {
     const argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--mode", "invalid" };
     try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
@@ -521,6 +561,17 @@ test "parseArgsFromSlice rejects unsupported samplerate" {
     try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&argv, std.testing.allocator));
     const legacy_argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--samplerate", "24000000" };
     try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&legacy_argv, std.testing.allocator));
+}
+
+test "parseArgsFromSlice rejects invalid threshold voltage" {
+    const below_range = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--threshold", "-0.1" };
+    try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&below_range, std.testing.allocator));
+
+    const above_range = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--threshold", "6.1" };
+    try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&above_range, std.testing.allocator));
+
+    const not_finite = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--threshold", "nan" };
+    try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&not_finite, std.testing.allocator));
 }
 
 test "parseArgsFromSlice rejects removed --config option" {
@@ -657,8 +708,18 @@ test "parseSamplerate accepts only supported discrete values" {
     try std.testing.expect(parseSamplerate("abc") == null);
 }
 
+test "parseThresholdVolts accepts only pxview range" {
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), parseThresholdVolts("0").?, 0.000_001);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), parseThresholdVolts("2.0").?, 0.000_001);
+    try std.testing.expectApproxEqAbs(@as(f64, 6.0), parseThresholdVolts("6.0").?, 0.000_001);
+    try std.testing.expect(parseThresholdVolts("-0.1") == null);
+    try std.testing.expect(parseThresholdVolts("6.1") == null);
+    try std.testing.expect(parseThresholdVolts("nan") == null);
+    try std.testing.expect(parseThresholdVolts("abc") == null);
+}
+
 test "buildCaptureCommand selects stdout raw output" {
-    const cmd = try buildCaptureCommand(null, true, .bin, 4096, null, true, .stream, 25_000_000, .{
+    const cmd = try buildCaptureCommand(null, true, .bin, 4096, null, true, .stream, 25_000_000, default_threshold_volts, .{
         .trigger_zero = 0xA,
         .trigger_one = 0xB,
         .trigger_rise = 0xC,
@@ -670,6 +731,7 @@ test "buildCaptureCommand selects stdout raw output" {
     try std.testing.expectEqual(true, cmd.decode_cross);
     try std.testing.expectEqual(OperationMode.stream, cmd.op_mode);
     try std.testing.expectEqual(@as(u64, 25_000_000), cmd.samplerate_hz);
+    try std.testing.expectApproxEqAbs(default_threshold_volts, cmd.threshold_volts, 0.000_001);
     try std.testing.expectEqual(@as(u32, 0xA), cmd.trigger_zero);
     try std.testing.expectEqual(@as(u32, 0xB), cmd.trigger_one);
     try std.testing.expectEqual(@as(u32, 0xC), cmd.trigger_rise);
@@ -684,26 +746,26 @@ test "buildCaptureCommand selects stdout raw output" {
 test "buildCaptureCommand rejects stdout and output-file conflict" {
     try std.testing.expectError(
         error.InvalidArgument,
-        buildCaptureCommand("capture.bin", true, .bin, 1024, null, false, .buffer, default_capture_samplerate_hz, .{}, false),
+        buildCaptureCommand("capture.bin", true, .bin, 1024, null, false, .buffer, default_capture_samplerate_hz, default_threshold_volts, .{}, false),
     );
 }
 
 test "buildCaptureCommand rejects missing output format" {
     try std.testing.expectError(
         error.InvalidArgument,
-        buildCaptureCommand("capture.bin", false, null, 1024, null, false, .buffer, default_capture_samplerate_hz, .{}, false),
+        buildCaptureCommand("capture.bin", false, null, 1024, null, false, .buffer, default_capture_samplerate_hz, default_threshold_volts, .{}, false),
     );
 }
 
 test "buildCaptureCommand rejects sr format for stdout target" {
     try std.testing.expectError(
         error.InvalidArgument,
-        buildCaptureCommand(null, true, .sr, 1024, null, false, .buffer, default_capture_samplerate_hz, .{}, false),
+        buildCaptureCommand(null, true, .sr, 1024, null, false, .buffer, default_capture_samplerate_hz, default_threshold_volts, .{}, false),
     );
 }
 
 test "buildCaptureCommand uses explicit sr format regardless of file extension" {
-    const cmd = try buildCaptureCommand("capture.bin", false, .sr, 2048, null, false, .buffer, default_capture_samplerate_hz, .{}, false);
+    const cmd = try buildCaptureCommand("capture.bin", false, .sr, 2048, null, false, .buffer, default_capture_samplerate_hz, default_threshold_volts, .{}, false);
     try std.testing.expectEqual(OutputFormat.sr, cmd.output_format);
     try std.testing.expect(cmd.decode_cross);
     try std.testing.expect(!cmd.triggers_specified);
@@ -714,7 +776,7 @@ test "buildCaptureCommand uses explicit sr format regardless of file extension" 
 }
 
 test "buildCaptureCommand preserves time option" {
-    const cmd = try buildCaptureCommand("capture.bin", false, .bin, 0, 150, false, .buffer, 25_000_000, .{}, false);
+    const cmd = try buildCaptureCommand("capture.bin", false, .bin, 0, 150, false, .buffer, 25_000_000, default_threshold_volts, .{}, false);
     try std.testing.expectEqual(@as(?u64, 150), cmd.time_ms);
     try std.testing.expectEqual(@as(usize, 0), cmd.sample_bytes);
 }

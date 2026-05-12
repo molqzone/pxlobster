@@ -58,7 +58,7 @@ pub const DEFAULT_TRIGGER_OUT_ENABLE: u32 = 0;
 pub const DEFAULT_TRIGGER_MASK: u32 = 0;
 pub const DEFAULT_PWM_CLOCK_HZ: u32 = 120_000_000;
 pub const DEFAULT_THRESHOLD_PWM_FREQ_HZ: u32 = 10_000;
-pub const DEFAULT_VTH_VOLTS: f64 = 2.0;
+pub const DEFAULT_VTH_VOLTS: f64 = caps.default_threshold_volts;
 pub const DEFAULT_VTH_SCALE: f64 = 3.334;
 pub const MAX_CAPTURE_REGISTER_WRITES: usize = 26;
 
@@ -540,6 +540,15 @@ test "buildCaptureRegisterScript buffer mode produces pxview-compatible sequence
     try expectScriptWrite(&script, 18, REG_STREAM_CHANNEL_ENABLE, 0x0000_FFFF);
     try expectScriptWrite(&script, 19, REG_STREAM_CONTROL, 0);
     try expectScriptWrite(&script, 24, REG_STREAM_START, STREAM_START_FLAGS);
+}
+
+test "buildCaptureRegisterScript applies configured threshold voltage" {
+    var script = try buildCaptureRegisterScript(4096, 65_536, 16, .{
+        .vth_volts = 3.3,
+    });
+
+    try expectScriptWrite(&script, 0, REG_THRESHOLD_PWM_MAX, 12_000);
+    try expectScriptWrite(&script, 1, REG_THRESHOLD_VALUE, 5_938);
 }
 
 test "buildCaptureRegisterScript stream mode applies stream mask and filter bits" {

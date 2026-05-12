@@ -54,8 +54,8 @@ fn printUsage(writer: anytype) !void {
         \\  pxlobster [--verbose] --scan
         \\  pxlobster [--verbose] --prime-fw
         \\  pxlobster [--verbose] --stop
-        \\  pxlobster [--verbose] -o <path> --format <bin|sr> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
-        \\  pxlobster [--verbose] --stdout --format <bin> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
+        \\  pxlobster [--verbose] -o <path> --format <bin|sr> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>] [--threshold <volts>]
+        \\  pxlobster [--verbose] --stdout --format <bin> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>] [--threshold <volts>]
         \\
         \\Options:
         \\  --version            Show the pxlobster version and exit.
@@ -71,6 +71,7 @@ fn printUsage(writer: anytype) !void {
         \\  --mode               Capture operation mode: buffer | stream | loop (default: buffer).
         \\  -t, --triggers       Trigger spec, e.g. 0=1,1=r,2=f,3=0.
         \\  --samplerate         Capture sample rate in Hz (must be a PXView-supported discrete value).
+        \\  --threshold          Logic threshold voltage in volts (0.0 to 6.0, default: 2.0).
         \\  -v, --verbose        Enable verbose debug logs (written to stderr).
         \\  -h, --help           Show this help.
         \\
@@ -296,9 +297,10 @@ fn runCapture(parsed: args.ParsedCommand, stdout: anytype, stderr: anytype) !voi
     };
     const verbose = parsed.verbose;
 
-    try verboseLog(verbose, stderr, "verbose: capture start mode={s} samplerate={d} samples={d} decode_cross={any} strict_probe={any}\n", .{
+    try verboseLog(verbose, stderr, "verbose: capture start mode={s} samplerate={d} threshold={d}V samples={d} decode_cross={any} strict_probe={any}\n", .{
         @tagName(cmd.op_mode),
         cmd.samplerate_hz,
+        cmd.threshold_volts,
         cmd.sample_bytes,
         cmd.decode_cross,
         cmd.triggers_specified,
@@ -337,6 +339,7 @@ fn runCapture(parsed: args.ParsedCommand, stdout: anytype, stderr: anytype) !voi
         .capture_profile = .{
             .op_mode = cmd.op_mode,
             .samplerate_hz = cmd.samplerate_hz,
+            .vth_volts = cmd.threshold_volts,
             .trigger_zero = cmd.trigger_zero,
             .trigger_one = cmd.trigger_one,
             .trigger_rise = cmd.trigger_rise,
