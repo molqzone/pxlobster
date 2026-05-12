@@ -103,6 +103,10 @@ const OpenedCaptureDevice = struct {
 
 const prime_settle_delay_ms: u64 = 100;
 
+fn nowNanoTimestamp() i128 {
+    return @intCast(std.Io.Clock.awake.now(std.Options.debug_io).nanoseconds);
+}
+
 const CandidateSlot = struct {
     snapshot: usb.DeviceSnapshot,
     dev: ?*c.libusb_device = null,
@@ -147,7 +151,7 @@ const CaptureSignalGuard = struct {
     }
 };
 
-fn captureSignalHandler(_: i32) callconv(.c) void {
+fn captureSignalHandler(_: std.posix.SIG) callconv(.c) void {
     capture_interrupt_requested.store(true, .release);
 }
 
@@ -307,11 +311,11 @@ pub fn runCapture(
 
     var temp_output_path: ?[]u8 = null;
     defer if (temp_output_path) |path| {
-        std.fs.cwd().deleteFile(path) catch {};
+        std.Io.Dir.cwd().deleteFile(std.Options.debug_io, path) catch {};
         allocator.free(path);
     };
 
-    var output_file: std.fs.File = undefined;
+    var output_file: std.Io.File = undefined;
     var close_output_file = false;
     switch (options.output_target) {
         .file_path => |output_path| {
@@ -324,14 +328,14 @@ pub fn runCapture(
                 break :blk output_path;
             };
 
-            output_file = try std.fs.cwd().createFile(capture_output_path, .{ .truncate = true });
+            output_file = try std.Io.Dir.cwd().createFile(std.Options.debug_io, capture_output_path, .{ .truncate = true });
             close_output_file = true;
         },
         .stdout => {
-            output_file = std.fs.File.stdout();
+            output_file = std.Io.File.stdout();
         },
     }
-    defer if (close_output_file) output_file.close();
+    defer if (close_output_file) output_file.close(std.Options.debug_io);
 
     const loop_mode = options.capture_profile.op_mode == .loop;
     var capture_signal_guard = CaptureSignalGuard.install();
@@ -399,7 +403,7 @@ pub fn runCapture(
     var writer_joined = false;
     defer if (!writer_joined) writer_thread.join();
 
-    const start_ns = std.time.nanoTimestamp();
+    const start_ns = nowNanoTimestamp();
     var last_progress_ns = start_ns;
     var last_bytes_in: u64 = 0;
     var last_bytes_out: u64 = 0;
@@ -425,9 +429,9 @@ pub fn runCapture(
         if (bytes_in_now != last_bytes_in or bytes_out_now != last_bytes_out) {
             last_bytes_in = bytes_in_now;
             last_bytes_out = bytes_out_now;
-            last_progress_ns = std.time.nanoTimestamp();
+            last_progress_ns = nowNanoTimestamp();
         } else if (options.max_idle_ms > 0) {
-            const now_ns = std.time.nanoTimestamp();
+            const now_ns = nowNanoTimestamp();
             const idle_ns = @max(now_ns - last_progress_ns, 0);
             if (@as(u64, @intCast(idle_ns / std.time.ns_per_ms)) >= options.max_idle_ms) {
                 shared.transfer_failed.store(true, .release);
@@ -441,7 +445,7 @@ pub fn runCapture(
         }
 
         if (!trigger_seen and !shared.stop_requested.load(.acquire)) {
-            const now_ns = std.time.nanoTimestamp();
+            const now_ns = nowNanoTimestamp();
             const elapsed_ms = @as(u64, @intCast(@max(now_ns - last_ctl_probe_ns, 0) / std.time.ns_per_ms));
             if (elapsed_ms >= options.ctl_poll_interval_ms) {
                 if (usb.readControlStatus(handle, options.ctl_poll_timeout_ms)) |ctl| {
@@ -478,7 +482,7 @@ pub fn runCapture(
         writer_joined = true;
     }
 
-    const end_ns = std.time.nanoTimestamp();
+    const end_ns = nowNanoTimestamp();
     const elapsed_ns = @max(end_ns - start_ns, 0);
 
     if (writer_ctx.failed.load(.acquire)) return error.OutputWriteFailed;
@@ -499,7 +503,7 @@ pub fn runCapture(
     if (options.output_format == .sr) {
         const raw_path = temp_output_path orelse return error.OutputPathMissing;
         const output_path = sr_output_path orelse return error.InvalidOutputTarget;
-        try output_file.sync();
+        try output_file.sync(std.Options.debug_io);
         try srzip.writeSessionFromRawFile(allocator, .{
             .output_path = output_path,
             .raw_path = raw_path,
@@ -636,7 +640,10 @@ fn openFirstSupportedDevice(allocator: std.mem.Allocator, ctx: *c.libusb_context
                 },
             }
 
-            std.Thread.sleep(prime_settle_delay_ms * std.time.ns_per_ms);
+            _ = std.Io.Clock.Duration.sleep(.{
+                .clock = .awake,
+                .raw = .fromMilliseconds(@intCast(prime_settle_delay_ms)),
+            }, std.Options.debug_io) catch {};
             const handle = usb.openDevice(dev_ptr) catch |err| {
                 switch (err) {
                     error.LibusbPermissionDenied => self.saw_permission_denied.* = true,

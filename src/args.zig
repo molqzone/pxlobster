@@ -52,6 +52,7 @@ pub const ParsedCommand = struct {
 
 /// 顶层 CLI 子命令选择 / Top-level CLI command selection.
 pub const Command = union(enum) {
+    version,
     scan,
     prime_fw,
     stop,
@@ -60,6 +61,7 @@ pub const Command = union(enum) {
 
 const clap_params = clap.parseParamsComptime(
     \\-h, --help
+    \\    --version
     \\-v, --verbose
     \\    --scan
     \\    --prime-fw
@@ -76,16 +78,16 @@ const clap_params = clap.parseParamsComptime(
     \\
 );
 
-pub fn parseArgs() !ParsedCommand {
+pub fn parseArgs(arguments: std.process.Args, allocator: std.mem.Allocator) !ParsedCommand {
     var diag = clap.Diagnostic{};
-    var result = clap.parse(clap.Help, &clap_params, clap.parsers.default, .{
-        .allocator = std.heap.page_allocator,
+    var result = clap.parse(clap.Help, &clap_params, clap.parsers.default, arguments, .{
+        .allocator = allocator,
         .diagnostic = &diag,
     }) catch return error.InvalidArgument;
     defer result.deinit();
 
     var parsed = try commandFromParsedArgs(result.args);
-    try detachOutputPathIfNeeded(&parsed.command, std.heap.page_allocator);
+    try detachOutputPathIfNeeded(&parsed.command, allocator);
     return parsed;
 }
 
@@ -128,12 +130,14 @@ fn commandFromParsedArgs(parsed_args: anytype) !ParsedCommand {
     if (@field(parsed_args, "help") > 0) return error.ShowHelp;
     const verbose = @field(parsed_args, "verbose") > 0;
 
+    const version_count = @field(parsed_args, "version");
     const scan_count = @field(parsed_args, "scan");
     const prime_fw_count = @field(parsed_args, "prime-fw");
     const stop_count = @field(parsed_args, "stop");
-    if (scan_count + prime_fw_count + stop_count > 1) return error.InvalidArgument;
+    if (version_count + scan_count + prime_fw_count + stop_count > 1) return error.InvalidArgument;
 
-    var requested_read_only: ?enum { scan, prime_fw, stop } = null;
+    var requested_read_only: ?enum { version, scan, prime_fw, stop } = null;
+    if (version_count > 0) requested_read_only = .version;
     if (scan_count > 0) requested_read_only = .scan;
     if (prime_fw_count > 0) requested_read_only = .prime_fw;
     if (stop_count > 0) requested_read_only = .stop;
@@ -205,6 +209,7 @@ fn commandFromParsedArgs(parsed_args: anytype) !ParsedCommand {
     if (requested_read_only) |command| {
         return .{
             .command = switch (command) {
+                .version => .version,
                 .scan => .scan,
                 .prime_fw => .prime_fw,
                 .stop => .stop,
@@ -332,7 +337,7 @@ fn parseTriggerSpec(value: []const u8) ?TriggerMasks {
         const entry = std.mem.trim(u8, entry_raw, " \t\r\n");
         if (entry.len == 0) return null;
 
-        const separator = std.mem.indexOfScalar(u8, entry, '=') orelse return null;
+        const separator = std.mem.findScalar(u8, entry, '=') orelse return null;
         const channel_text = std.mem.trim(u8, entry[0..separator], " \t\r\n");
         const state_text = std.mem.trim(u8, entry[separator + 1 ..], " \t\r\n");
         if (channel_text.len == 0 or state_text.len != 1) return null;
@@ -482,6 +487,16 @@ test "parseArgsFromSlice returns ShowHelp for --help" {
     try std.testing.expectError(error.ShowHelp, parseArgsFromSlice(&argv, std.testing.allocator));
 }
 
+test "parseArgsFromSlice parses version command" {
+    const argv = [_][]const u8{ "pxlobster", "--version" };
+    const parsed = try parseArgsFromSlice(&argv, std.testing.allocator);
+    switch (parsed.command) {
+        .version => {},
+        else => return error.TestExpectedEqual,
+    }
+    try std.testing.expect(!parsed.verbose);
+}
+
 test "parseArgsFromSlice accepts samplerate from --samplerate" {
     const argv = [_][]const u8{ "pxlobster", "--stdout", "--format", "bin", "--samplerate", "25000000" };
     const parsed = try parseArgsFromSlice(&argv, std.testing.allocator);
@@ -552,6 +567,9 @@ test "parseArgsFromSlice keeps stop mutually exclusive with other command groups
 
     const stop_capture = [_][]const u8{ "pxlobster", "--stop", "--stdout", "--format", "bin" };
     try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&stop_capture, std.testing.allocator));
+
+    const version_capture = [_][]const u8{ "pxlobster", "--version", "--stdout", "--format", "bin" };
+    try std.testing.expectError(error.InvalidArgument, parseArgsFromSlice(&version_capture, std.testing.allocator));
 }
 
 test "parseOpMode accepts supported values" {

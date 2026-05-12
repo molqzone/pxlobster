@@ -115,12 +115,12 @@ test "renderMetadata emits required sigrok session fields" {
     const rendered = try renderMetadata(std.testing.allocator, meta);
     defer std.testing.allocator.free(rendered);
 
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "capturefile=logic-1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "samplerate=24000000") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "total probes=16") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "unitsize=2") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "probe1=D0") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "probe16=D15") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "capturefile=logic-1") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "samplerate=24000000") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "total probes=16") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "unitsize=2") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "probe1=D0") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "probe16=D15") != null);
 }
 
 test "versionFileContent returns sigrok session version marker" {

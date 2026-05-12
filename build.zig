@@ -14,6 +14,19 @@ const windows_libusb_sources = [_][]const u8{
     "os/windows_winusb.c",
 };
 
+fn readPackageVersion(b: *std.Build) []const u8 {
+    const zon_path = b.pathFromRoot("build.zig.zon");
+    const zon = std.Io.Dir.cwd().readFileAlloc(b.graph.io, zon_path, b.allocator, .limited(64 * 1024)) catch
+        @panic("failed to read build.zig.zon");
+    const key = ".version = \"";
+    const start = std.mem.find(u8, zon, key) orelse
+        @panic("failed to locate package version in build.zig.zon");
+    const value_start = start + key.len;
+    const value_end = std.mem.findScalarPos(u8, zon, value_start, '"') orelse
+        @panic("failed to parse package version in build.zig.zon");
+    return zon[value_start..value_end];
+}
+
 fn addWindowsLibUsbConfigHeader(b: *std.Build) *std.Build.Step.ConfigHeader {
     const config_template = b.addWriteFiles();
     const config_template_path = config_template.add("libusb/config.h.in",
@@ -47,8 +60,8 @@ fn addLibUsbHeaders(
     artifact: *std.Build.Step.Compile,
     libusb_dep: *std.Build.Dependency,
 ) void {
-    artifact.addIncludePath(libusb_dep.path(""));
-    artifact.addIncludePath(libusb_dep.path("libusb"));
+    artifact.root_module.addIncludePath(libusb_dep.path(""));
+    artifact.root_module.addIncludePath(libusb_dep.path("libusb"));
 }
 
 fn buildBundledWindowsLibUsb(
@@ -67,15 +80,15 @@ fn buildBundledWindowsLibUsb(
         }),
     });
 
-    lib.addIncludePath(libusb_dep.path("libusb"));
-    lib.addIncludePath(libusb_dep.path("libusb/os"));
+    lib.root_module.addIncludePath(libusb_dep.path("libusb"));
+    lib.root_module.addIncludePath(libusb_dep.path("libusb/os"));
     lib.root_module.addConfigHeader(addWindowsLibUsbConfigHeader(b));
     lib.root_module.addCMacro("_WIN32_WINNT", "0x0600");
     lib.root_module.addCMacro("_CRT_SECURE_NO_WARNINGS", "1");
     if (optimize != .Debug) {
         lib.root_module.addCMacro("NDEBUG", "1");
     }
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = libusb_dep.path("libusb"),
         .files = &windows_libusb_sources,
         .flags = &.{"-std=gnu11"},
@@ -100,14 +113,14 @@ fn configureLibUsb(
         return;
     }
 
-    artifact.linkLibC();
+    artifact.root_module.link_libc = true;
 
     if (libusb_lib_dir) |lib_dir| {
-        artifact.addLibraryPath(.{ .cwd_relative = lib_dir });
+        artifact.root_module.addLibraryPath(.{ .cwd_relative = lib_dir });
     }
 
     if (libusb_link_file) |link_file| {
-        artifact.addObjectFile(.{ .cwd_relative = link_file });
+        artifact.root_module.addObjectFile(.{ .cwd_relative = link_file });
     } else {
         artifact.root_module.linkSystemLibrary("usb-1.0", .{
             .use_pkg_config = .no,
@@ -122,10 +135,32 @@ pub fn build(b: *std.Build) void {
     const libusb_lib_dir = b.option([]const u8, "libusb-lib-dir", "Custom libusb library directory");
     const libusb_link_file = b.option([]const u8, "libusb-link-file", "Custom libusb import/static archive");
     const libusb_dep = b.dependency("libusb", .{});
+    const clap_dep = b.dependency("clap", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const libusb_translate = b.addTranslateC(.{
+        .root_source_file = libusb_dep.path("libusb/libusb.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    libusb_translate.addIncludePath(libusb_dep.path(""));
+    libusb_translate.addIncludePath(libusb_dep.path("libusb"));
+    if (target.result.os.tag == .windows) {
+        libusb_translate.defineCMacro("_FORTIFY_SOURCE", "0");
+        libusb_translate.defineCMacro("__MINGW_FORTIFY_LEVEL", "0");
+    }
+    const c_bindings_mod = libusb_translate.createModule();
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "app_version", readPackageVersion(b));
 
     const mod = b.addModule("pxlobster", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "c", .module = c_bindings_mod },
+        },
     });
 
     const resources_mod = b.createModule(.{
@@ -133,7 +168,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const clap_dep = b.dependency("clap", .{});
+    const clap_mod = clap_dep.module("clap");
 
     const exe = b.addExecutable(.{
         .name = "pxlobster",
@@ -144,10 +179,11 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "pxlobster", .module = mod },
                 .{ .name = "pxresources", .module = resources_mod },
-                .{ .name = "clap", .module = clap_dep.module("clap") },
+                .{ .name = "clap", .module = clap_mod },
             },
         }),
     });
+    exe.root_module.addOptions("build_options", build_options);
     configureLibUsb(b, target, optimize, exe, libusb_dep, libusb_lib_dir, libusb_link_file);
 
     b.installArtifact(exe);
@@ -198,13 +234,13 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "clap", .module = clap_dep.module("clap") },
+                .{ .name = "clap", .module = clap_mod },
                 .{ .name = "args", .module = b.createModule(.{
                     .root_source_file = b.path("src/args.zig"),
                     .target = target,
                     .optimize = optimize,
                     .imports = &.{
-                        .{ .name = "clap", .module = clap_dep.module("clap") },
+                        .{ .name = "clap", .module = clap_mod },
                     },
                 }) },
             },

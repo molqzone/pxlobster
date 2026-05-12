@@ -23,6 +23,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Prepare Zig Cache Dirs
+        run: |
+          mkdir -p "${{ runner.temp }}/zig-global-cache"
+          mkdir -p "${{ runner.temp }}/zig-global-cache/tmp"
+          mkdir -p "${{ github.workspace }}/.zig-cache"
+          mkdir -p "${{ github.workspace }}/.zig-cache/tmp"
+          mkdir -p "${{ github.workspace }}/zig-pkg"
+
       - name: Install libusb
         run: |
           sudo apt-get update
@@ -31,16 +39,23 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
+          use-cache: false
 
       - name: Check Formatting
         run: zig fmt --check build.zig build.zig.zon src tests
 
       - name: Run Tests
         run: zig build test --summary all
+        env:
+          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-global-cache
+          ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
 
       - name: Build ReleaseSafe
         run: zig build -Doptimize=ReleaseSafe
+        env:
+          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-global-cache
+          ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
 
   windows-build:
     name: Build And Smoke Test (Windows)
@@ -50,14 +65,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Prepare Zig Cache Dirs
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/zig-global-cache" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/zig-global-cache/tmp" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE/.zig-cache" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE/.zig-cache/tmp" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE/zig-pkg" -Force | Out-Null
+
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
+          use-cache: false
 
       - name: Build ReleaseSafe
         shell: pwsh
         run: zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe
+        env:
+          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-global-cache
+          ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
 
       - name: Smoke Test Portable Path
         shell: pwsh

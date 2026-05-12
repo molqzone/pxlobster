@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const args = @import("args.zig");
+const build_options = @import("build_options");
 const capture = @import("capture.zig");
 const usb = @import("usb.zig");
 const device = @import("device.zig");
@@ -8,15 +9,15 @@ const c = usb.c;
 const supports_linux_udev_hint = builtin.os.tag == .linux;
 
 /// CLI 入口：解析参数、分发命令并将失败映射到退出码 / CLI entry point: parse args, dispatch command, and map failures to exit codes.
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var stdout_buffer: [4096]u8 = undefined;
     var stderr_buffer: [4096]u8 = undefined;
-    var stdout = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout = std.Io.File.stdout().writer(init.io, &stdout_buffer);
     defer stdout.interface.flush() catch {};
-    var stderr = std.fs.File.stderr().writer(&stderr_buffer);
+    var stderr = std.Io.File.stderr().writer(init.io, &stderr_buffer);
     defer stderr.interface.flush() catch {};
 
-    var parsed = args.parseArgs() catch |err| switch (err) {
+    var parsed = args.parseArgs(init.minimal.args, init.gpa) catch |err| switch (err) {
         error.ShowHelp => {
             try printUsage(&stdout.interface);
             return;
@@ -28,9 +29,10 @@ pub fn main() !void {
         },
         else => return err,
     };
-    defer args.deinitParsedCommand(&parsed, std.heap.page_allocator);
+    defer args.deinitParsedCommand(&parsed, init.gpa);
 
     switch (parsed.command) {
+        .version => try printVersion(&stdout.interface),
         .scan => try scanUsbDevices(&stdout.interface, &stderr.interface, parsed.verbose),
         .prime_fw => try primeFirmware(&stdout.interface, &stderr.interface, parsed.verbose),
         .stop => try stopCaptureOnSupportedDevices(&stdout.interface, &stderr.interface, parsed.verbose),
@@ -48,6 +50,7 @@ const LogicModeProbe = union(enum) {
 fn printUsage(writer: anytype) !void {
     try writer.writeAll(
         \\Usage:
+        \\  pxlobster --version
         \\  pxlobster [--verbose] --scan
         \\  pxlobster [--verbose] --prime-fw
         \\  pxlobster [--verbose] --stop
@@ -55,6 +58,7 @@ fn printUsage(writer: anytype) !void {
         \\  pxlobster [--verbose] --stdout --format <bin> [--samples <bytes>|--time <ms>] [--decode-cross] [--mode <buffer|stream|loop>] [-t <spec>] [--samplerate <hz>]
         \\
         \\Options:
+        \\  --version            Show the pxlobster version and exit.
         \\  --scan               Read-only scan for supported PX Logic devices.
         \\  --prime-fw           Inject firmware to detected PX Logic devices.
         \\  --stop               Best-effort stop for active capture on supported PX Logic devices.
@@ -71,12 +75,16 @@ fn printUsage(writer: anytype) !void {
         \\  -h, --help           Show this help.
         \\
         \\Notes:
-        \\  --scan, --prime-fw, --stop, and capture mode are mutually exclusive.
+        \\  --version, --scan, --prime-fw, --stop, and capture mode are mutually exclusive.
         \\  Output target (--stdout / --output-file) and output format (--format) are configured independently.
         \\  File extension does not control output format.
         \\  loop mode runs continuously until Ctrl+C.
         \\
     );
+}
+
+fn printVersion(writer: anytype) !void {
+    try writer.print("pxlobster {s}\n", .{build_options.app_version});
 }
 
 /// 仅在 `--verbose` 打开时输出调试日志 / Emits verbose logs only when `--verbose` is enabled.
@@ -491,4 +499,11 @@ test "modelLabelForIdentity returns null for unknown IDs" {
 test "parseArgsFromSlice keeps scan and capture mutually exclusive" {
     const argv = [_][]const u8{ "pxlobster", "--scan", "--stdout" };
     try std.testing.expectError(error.InvalidArgument, args.parseArgsFromSlice(&argv, std.testing.allocator));
+}
+
+test "printVersion writes app version" {
+    var buffer: [64]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    try printVersion(&writer);
+    try std.testing.expectEqualStrings("pxlobster 0.2.4\n", writer.buffered());
 }
