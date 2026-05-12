@@ -5,9 +5,9 @@ pub const default_capture_samplerate_hz: u64 = 250_000_000;
 
 /// 默认逻辑阈值电压，和 PXView 默认值保持一致 / Default logic threshold voltage, matching PXView's default.
 pub const default_threshold_volts: f64 = 2.0;
-/// PXView UI 允许的最低逻辑阈值电压 / Minimum logic threshold voltage accepted by PXView UI.
+/// PXLogic 允许的最低逻辑阈值电压 / Minimum logic threshold voltage accepted by PXLogic.
 pub const min_threshold_volts: f64 = 0.0;
-/// PXView UI 允许的最高逻辑阈值电压 / Maximum logic threshold voltage accepted by PXView UI.
+/// PXLogic 允许的最高逻辑阈值电压 / Maximum logic threshold voltage accepted by PXLogic.
 pub const max_threshold_volts: f64 = 6.0;
 
 /// 设备采集工作模式 / Device capture operation mode.
@@ -32,7 +32,7 @@ pub fn isSupportedSamplerate(samplerate_hz: u64) bool {
     return true;
 }
 
-/// 校验逻辑阈值电压是否处于 PXView 兼容范围 / Validates a logic threshold voltage against the PXView-compatible range.
+/// 校验逻辑阈值电压是否处于 PXLogic 兼容范围 / Validates a logic threshold voltage against the PXLogic-compatible range.
 pub fn isSupportedThresholdVolts(threshold_volts: f64) bool {
     return std.math.isFinite(threshold_volts) and
         threshold_volts >= min_threshold_volts and
